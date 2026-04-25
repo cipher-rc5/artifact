@@ -1,0 +1,51 @@
+[package]
+name = "space_cleaner"
+version = "0.1.0"
+edition = "2024"
+description = "GPUI-based desktop app for finding and reclaiming disk space."
+license = "MIT"
+repository = "https://github.com/cipher/space_cleaner"
+readme = "README.md"
+
+[dependencies]
+# Error handling
+anyhow    = "1.0.102"   # Ergonomic error type for application code (`anyhow::Result`).
+thiserror = "2.0.18"    # Derive macro for typed error enums in library modules.
+
+# Async runtime / concurrency primitives
+num_cpus     = "1.17.0" # Detect logical CPU count to size scanner thread pools.
+once_cell    = "1.21.4" # Lazy statics (config, regexes, theme tables) without macros.
+parking_lot  = "0.12.5" # Faster, smaller `Mutex`/`RwLock` than std.
+smallvec     = "1.15.1" # Stack-allocated small vectors; cuts allocations in scan hot paths.
+
+# UI
+gpui = "0.2.2"          # Zed's GPU-accelerated UI framework — main rendering layer.
+
+# Filesystem / OS
+dirs     = "6.0.0"      # Cross-platform user dirs (config, cache, home).
+hostname = "0.4.2"      # Read the machine hostname for log/db identification.
+walkdir  = "2.5.0"      # Recursive directory traversal for the scanner.
+
+# Storage / serialization
+redb        = "4.1.0"   # Embedded ACID key-value store; persists scan results.
+rkyv        = "0.8.16"  # Zero-copy (de)serialization for redb-stored records.
+serde       = { version = "1.0.228", features = ["derive"] } # Config + JSON model derives.
+serde_json  = "1.0.149" # JSON for config import/export and IPC payloads.
+toml        = "1.1.2"   # TOML parsing for the user config file.
+
+# Time / formatting
+chrono    = "0.4.44"    # Timestamps on scan records and log lines.
+humansize = "2.1.3"     # Render byte counts as "1.4 GB" in the UI.
+
+# Logging / observability
+tracing             = "0.1.44"  # Structured, span-based logging facade.
+tracing-appender    = "0.2.5"   # Non-blocking file appender + log rotation.
+tracing-subscriber  = { version = "0.3.23", features = ["env-filter"] } # Subscriber + RUST_LOG-style filtering.
+
+# Build profile tuned for distribution: smaller binary, better runtime perf.
+# Used by `just build-mac` / `just build-linux-*` / `cargo zigbuild --release`.
+[profile.release]
+lto           = "thin"  # Cross-crate inlining; meaningful size + speed win.
+codegen-units = 1       # Maximize optimization at the cost of build time.
+strip         = "symbols" # Drop debug symbols from the binary.
+panic         = "abort" # No unwinding tables — smaller binary; we don't catch_unwind.
