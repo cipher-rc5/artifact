@@ -28,12 +28,9 @@ impl ArtifactView {
                 cx.background_executor()
                     .timer(Duration::from_millis(200))
                     .await;
-                let ok = cx.update(|cx| {
+                cx.update(|cx| {
                     app_clone.update(cx, |app, cx| app.check_scan_progress(cx));
                 });
-                if ok.is_err() {
-                    break;
-                }
             }
         })
         .detach();
