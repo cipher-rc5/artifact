@@ -6,7 +6,7 @@ use gpui::*;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use crate::app::{ScanState, ArtifactApp};
+use crate::app::{ArtifactApp, ScanState};
 use artifact::components::*;
 use artifact::directory_item::DirectoryType;
 use artifact::theme::{DesignSystem, Gradients};
