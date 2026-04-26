@@ -7,7 +7,7 @@ use tracing::{debug, info};
 use walkdir::WalkDir;
 
 use crate::directory_item::{DirectoryItem, DirectoryType};
-use crate::error::{Result, SpaceCleanerError};
+use crate::error::{Result, ArtifactError};
 
 pub struct Scanner {
     root: PathBuf,
@@ -39,7 +39,7 @@ impl Scanner {
         info!("Scanning from root: {}", self.root.display());
 
         if !self.root.exists() {
-            return Err(SpaceCleanerError::Scan(format!(
+            return Err(ArtifactError::Scan(format!(
                 "Path does not exist: {}",
                 self.root.display()
             )));

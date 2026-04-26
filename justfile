@@ -1,11 +1,11 @@
-# Space Cleaner — task runner
+# ARTIFACT — task runner
 # Requires: just, rustup, zig, cargo-zigbuild
 #   brew install just zig
 #   cargo install --locked cargo-zigbuild
 
 set shell := ["bash", "-cu"]
 
-bin := "space_cleaner"
+bin := "artifact"
 dist := "target/dist"
 
 # Pin glibc to 2.17 so Linux release binaries run on RHEL/CentOS 7-era distros.

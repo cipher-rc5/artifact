@@ -1,12 +1,12 @@
 // file: src/error.rs
-// description: Error types for Space Cleaner
+// description: Error types for ARTIFACT
 
 use thiserror::Error;
 
-pub type Result<T> = std::result::Result<T, SpaceCleanerError>;
+pub type Result<T> = std::result::Result<T, ArtifactError>;
 
 #[derive(Debug, Error)]
-pub enum SpaceCleanerError {
+pub enum ArtifactError {
     #[error("Configuration error: {0}")]
     Configuration(String),
 
@@ -29,7 +29,7 @@ pub enum SpaceCleanerError {
     Path(String),
 }
 
-impl SpaceCleanerError {
+impl ArtifactError {
     pub fn user_message(&self) -> String {
         match self {
             Self::Configuration(msg) => format!("Configuration problem: {}", msg),
@@ -43,38 +43,38 @@ impl SpaceCleanerError {
     }
 }
 
-impl From<redb::Error> for SpaceCleanerError {
+impl From<redb::Error> for ArtifactError {
     fn from(e: redb::Error) -> Self {
-        SpaceCleanerError::DatabaseQuery(e.to_string())
+        ArtifactError::DatabaseQuery(e.to_string())
     }
 }
 
-impl From<redb::DatabaseError> for SpaceCleanerError {
+impl From<redb::DatabaseError> for ArtifactError {
     fn from(e: redb::DatabaseError) -> Self {
-        SpaceCleanerError::DatabaseConnection(e.to_string())
+        ArtifactError::DatabaseConnection(e.to_string())
     }
 }
 
-impl From<redb::TransactionError> for SpaceCleanerError {
+impl From<redb::TransactionError> for ArtifactError {
     fn from(e: redb::TransactionError) -> Self {
-        SpaceCleanerError::DatabaseQuery(e.to_string())
+        ArtifactError::DatabaseQuery(e.to_string())
     }
 }
 
-impl From<redb::TableError> for SpaceCleanerError {
+impl From<redb::TableError> for ArtifactError {
     fn from(e: redb::TableError) -> Self {
-        SpaceCleanerError::DatabaseQuery(e.to_string())
+        ArtifactError::DatabaseQuery(e.to_string())
     }
 }
 
-impl From<redb::StorageError> for SpaceCleanerError {
+impl From<redb::StorageError> for ArtifactError {
     fn from(e: redb::StorageError) -> Self {
-        SpaceCleanerError::DatabaseQuery(e.to_string())
+        ArtifactError::DatabaseQuery(e.to_string())
     }
 }
 
-impl From<redb::CommitError> for SpaceCleanerError {
+impl From<redb::CommitError> for ArtifactError {
     fn from(e: redb::CommitError) -> Self {
-        SpaceCleanerError::DatabaseQuery(e.to_string())
+        ArtifactError::DatabaseQuery(e.to_string())
     }
 }

@@ -11,11 +11,11 @@ use std::thread;
 use std::time::Instant;
 use tracing::{debug, error, info, warn};
 
-use space_cleaner::config::AppConfig;
-use space_cleaner::database::{DeletionDatabase, DeletionRecord};
-use space_cleaner::directory_item::DirectoryItem;
-use space_cleaner::scanner::Scanner;
-use space_cleaner::utils;
+use artifact::config::AppConfig;
+use artifact::database::{DeletionDatabase, DeletionRecord};
+use artifact::directory_item::DirectoryItem;
+use artifact::scanner::Scanner;
+use artifact::utils;
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -57,7 +57,7 @@ enum ScanMessage {
 // App model
 // ---------------------------------------------------------------------------
 
-pub struct SpaceCleanerApp {
+pub struct ArtifactApp {
     // Scan state
     scan_path: String,
     scan_node_modules: bool,
@@ -91,7 +91,7 @@ pub struct SpaceCleanerApp {
 // Read-only getters
 // ---------------------------------------------------------------------------
 
-impl SpaceCleanerApp {
+impl ArtifactApp {
     pub fn scan_state(&self) -> ScanState {
         self.scan_state
     }
@@ -137,9 +137,9 @@ impl SpaceCleanerApp {
 // Construction & mutations
 // ---------------------------------------------------------------------------
 
-impl SpaceCleanerApp {
+impl ArtifactApp {
     pub fn new(config: AppConfig, cx: &mut App) -> Entity<Self> {
-        info!("Initializing SpaceCleanerApp with GPUI");
+        info!("Initializing ArtifactApp");
 
         let home = utils::get_home_dir()
             .unwrap_or_else(|| PathBuf::from("/"))

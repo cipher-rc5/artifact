@@ -1,24 +1,24 @@
 // file: src/view.rs
-// description: GPUI view for Space Cleaner — sleek dark UI with gradient accents
+// description: GPUI view for ARTIFACT — sleek dark UI with gradient accents
 
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use crate::app::{ScanState, SpaceCleanerApp};
-use space_cleaner::components::*;
-use space_cleaner::directory_item::DirectoryType;
-use space_cleaner::theme::{DesignSystem, Gradients};
-use space_cleaner::utils;
+use crate::app::{ScanState, ArtifactApp};
+use artifact::components::*;
+use artifact::directory_item::DirectoryType;
+use artifact::theme::{DesignSystem, Gradients};
+use artifact::utils;
 
-pub struct SpaceCleanerView {
-    app: Entity<SpaceCleanerApp>,
+pub struct ArtifactView {
+    app: Entity<ArtifactApp>,
     design: DesignSystem,
 }
 
-impl SpaceCleanerView {
-    pub fn new(app: Entity<SpaceCleanerApp>, _window: &mut Window, cx: &mut Context<Self>) -> Self {
+impl ArtifactView {
+    pub fn new(app: Entity<ArtifactApp>, _window: &mut Window, cx: &mut Context<Self>) -> Self {
         cx.observe(&app, |_view, _entity, cx| cx.notify()).detach();
 
         // Poll scan progress in background
@@ -49,7 +49,7 @@ impl SpaceCleanerView {
 // Render
 // ---------------------------------------------------------------------------
 
-impl Render for SpaceCleanerView {
+impl Render for ArtifactView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let app = self.app.read(cx);
         let d = self.design;
@@ -121,7 +121,7 @@ impl Render for SpaceCleanerView {
                         div()
                             .text_size(d.typography.size_title)
                             .font_weight(FontWeight::EXTRA_BOLD)
-                            .child("Space Cleaner"),
+                            .child("ARTIFACT"),
                     )
                     .child(
                         div()
@@ -295,7 +295,7 @@ impl Render for SpaceCleanerView {
 // Sub-renderers (static helpers to keep render() compact)
 // ---------------------------------------------------------------------------
 
-impl SpaceCleanerView {
+impl ArtifactView {
     /// Progress panel shown while a scan is running.
     fn render_progress_panel(d: DesignSystem, progress: Option<&crate::app::ScanProgress>) -> Div {
         let (dirs_scanned, items_found, current_path, size_found, elapsed) = match progress {
@@ -523,7 +523,7 @@ impl SpaceCleanerView {
         d: DesignSystem,
         scan_state: ScanState,
         entries: &[(usize, String, DirectoryType, String, u64, bool, bool)],
-        app: &Entity<SpaceCleanerApp>,
+        app: &Entity<ArtifactApp>,
     ) -> Stateful<Div> {
         let mut list = div()
             .id("dir-list")

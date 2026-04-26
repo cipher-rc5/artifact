@@ -24,7 +24,7 @@ pub fn init_logging(config: LoggingConfig) -> anyhow::Result<LoggingGuard> {
     if config.log_to_file {
         std::fs::create_dir_all(&config.log_dir)?;
 
-        let file_appender = tracing_appender::rolling::daily(&config.log_dir, "space_cleaner.log");
+        let file_appender = tracing_appender::rolling::daily(&config.log_dir, "artifact.log");
         let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
 
         if config.log_to_stdout {

@@ -1,5 +1,5 @@
 // file: src/lib.rs
-// description: Public library interface for Space Cleaner (used by tests)
+// description: Public library interface for ARTIFACT (used by tests)
 // reference: https://github.com/zed-industries/zed
 
 pub mod components;
@@ -16,7 +16,7 @@ pub mod utils;
 pub use config::AppConfig;
 pub use database::{DeletionDatabase, DeletionRecord, DeletionStatistics};
 pub use directory_item::{DirectoryItem, DirectoryType};
-pub use error::{Result, SpaceCleanerError};
+pub use error::{Result, ArtifactError};
 pub use logging::{LoggingConfig, LoggingGuard};
 pub use scanner::Scanner;
 pub use theme::{BentoTheme, DesignSystem};

@@ -1,5 +1,5 @@
 // file: src/utils.rs
-// description: Utility functions for Space Cleaner
+// description: Utility functions for ARTIFACT
 
 use std::path::{Path, PathBuf};
 

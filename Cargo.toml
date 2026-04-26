@@ -1,10 +1,10 @@
 [package]
-name = "space_cleaner"
+name = "artifact"
 version = "0.1.0"
 edition = "2024"
 description = "GPUI-based desktop app for finding and reclaiming disk space."
 license = "MIT"
-repository = "https://github.com/cipher/space_cleaner"
+repository = "https://github.com/cipher/artifact"
 readme = "README.md"
 
 [dependencies]

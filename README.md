@@ -1,4 +1,4 @@
-# Space Cleaner
+# ARTIFACT
 
 GPUI-based desktop app for finding and reclaiming disk space. Walks
 directories, ranks them by size, and persists results in an embedded redb
@@ -75,7 +75,7 @@ as the `just` recipes.
 ```
 src/
   main.rs            # entry point, wires config + logging + GPUI
-  app.rs             # SpaceCleanerApp model
+  app.rs             # ArtifactApp model
   view.rs            # top-level view
   components.rs      # UI components
   scanner.rs         # filesystem traversal

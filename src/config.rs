@@ -80,7 +80,7 @@ impl AppConfig {
     pub fn load() -> anyhow::Result<Self> {
         let config_dir = dirs::config_dir()
             .unwrap_or_else(|| PathBuf::from("."))
-            .join("space_cleaner");
+            .join("artifact");
 
         let config_path = config_dir.join("config.toml");
 
@@ -96,7 +96,7 @@ impl AppConfig {
     pub fn get_log_dir(&self) -> PathBuf {
         dirs::data_dir()
             .unwrap_or_else(|| PathBuf::from("."))
-            .join("space_cleaner")
+            .join("artifact")
             .join("logs")
     }
 
@@ -110,7 +110,7 @@ impl AppConfig {
         } else {
             dirs::data_dir()
                 .unwrap_or_else(|| PathBuf::from("."))
-                .join("space_cleaner")
+                .join("artifact")
                 .join("db")
         }
     }

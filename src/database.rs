@@ -11,9 +11,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{debug, info, instrument};
 
 use crate::directory_item::DirectoryType;
-use crate::error::{Result, SpaceCleanerError};
+use crate::error::{Result, ArtifactError};
 
-const DB_FILE: &str = "space_cleaner.redb";
+const DB_FILE: &str = "artifact.redb";
 const SCHEMA_VERSION: i64 = 1;
 
 // Primary table: id -> rkyv-archived DeletionRecord
@@ -88,18 +88,18 @@ impl DeletionDatabase {
 
         let db_path = if let Some(dir) = data_dir {
             std::fs::create_dir_all(&dir).map_err(|e| {
-                SpaceCleanerError::DatabaseInit(format!("Could not create data directory: {}", e))
+                ArtifactError::DatabaseInit(format!("Could not create data directory: {}", e))
             })?;
             dir.join(DB_FILE)
         } else {
             let config_dir = dirs::config_dir()
                 .ok_or_else(|| {
-                    SpaceCleanerError::Configuration("Could not find config directory".to_string())
+                    ArtifactError::Configuration("Could not find config directory".to_string())
                 })?
-                .join("space_cleaner");
+                .join("artifact");
 
             std::fs::create_dir_all(&config_dir).map_err(|e| {
-                SpaceCleanerError::DatabaseInit(format!("Could not create config directory: {}", e))
+                ArtifactError::DatabaseInit(format!("Could not create config directory: {}", e))
             })?;
 
             config_dir.join(DB_FILE)
@@ -108,7 +108,7 @@ impl DeletionDatabase {
         debug!("Database path: {}", db_path.display());
 
         let db = Database::create(&db_path)
-            .map_err(|e| SpaceCleanerError::DatabaseConnection(e.to_string()))?;
+            .map_err(|e| ArtifactError::DatabaseConnection(e.to_string()))?;
 
         let instance = Self { db: Arc::new(db) };
         instance.initialize_schema()?;
@@ -174,7 +174,7 @@ impl DeletionDatabase {
 
     fn encode_record(record: &DeletionRecord) -> Result<AlignedVec<16>> {
         rkyv::to_bytes::<RkyvError>(record)
-            .map_err(|e| SpaceCleanerError::DatabaseQuery(format!("encode: {}", e)))
+            .map_err(|e| ArtifactError::DatabaseQuery(format!("encode: {}", e)))
     }
 
     // rkyv requires the buffer to satisfy the archive's alignment, but slices
@@ -183,7 +183,7 @@ impl DeletionDatabase {
         let mut aligned = AlignedVec::<16>::with_capacity(bytes.len());
         aligned.extend_from_slice(bytes);
         rkyv::from_bytes::<DeletionRecord, RkyvError>(&aligned)
-            .map_err(|e| SpaceCleanerError::DatabaseQuery(format!("decode: {}", e)))
+            .map_err(|e| ArtifactError::DatabaseQuery(format!("decode: {}", e)))
     }
 
     fn load_record(

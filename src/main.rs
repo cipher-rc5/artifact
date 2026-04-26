@@ -5,11 +5,11 @@
 mod app;
 mod view;
 
-use app::SpaceCleanerApp;
+use app::ArtifactApp;
 use gpui::*;
-use space_cleaner::{AppConfig, LoggingConfig};
+use artifact::{AppConfig, LoggingConfig};
 use tracing::info;
-use view::SpaceCleanerView;
+use view::ArtifactView;
 
 fn main() -> anyhow::Result<()> {
     let config = AppConfig::load().unwrap_or_else(|e| {
@@ -25,9 +25,9 @@ fn main() -> anyhow::Result<()> {
         json_format: config.logging.json_format,
     };
 
-    let _guard = match space_cleaner::logging::init_logging(logging_config) {
+    let _guard = match artifact::logging::init_logging(logging_config) {
         Ok(guard) => {
-            info!("Space Cleaner starting up with GPUI");
+            info!("ARTIFACT starting up with GPUI");
             guard
         }
         Err(e) => {
@@ -43,7 +43,7 @@ fn main() -> anyhow::Result<()> {
     let window_height = config.ui.window_height;
 
     Application::new().run(move |cx: &mut App| {
-        let app_model = SpaceCleanerApp::new(config.clone(), cx);
+        let app_model = ArtifactApp::new(config.clone(), cx);
 
         cx.open_window(
             WindowOptions {
@@ -55,12 +55,12 @@ fn main() -> anyhow::Result<()> {
                     size: size(px(window_width), px(window_height)),
                 })),
                 titlebar: Some(TitlebarOptions {
-                    title: Some("Space Cleaner".into()),
+                    title: Some("ARTIFACT".into()),
                     ..Default::default()
                 }),
                 ..Default::default()
             },
-            move |window, cx| cx.new(|cx| SpaceCleanerView::new(app_model.clone(), window, cx)),
+            move |window, cx| cx.new(|cx| ArtifactView::new(app_model.clone(), window, cx)),
         )
         .expect("Failed to open window");
     });
