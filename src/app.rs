@@ -85,6 +85,9 @@ pub struct ArtifactApp {
     show_file_browser: bool,
     browse_path: PathBuf,
     browse_entries: Vec<BrowseEntry>,
+
+    // Live scan log (capped at 60 entries for the log panel)
+    pub scan_log: Vec<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -177,6 +180,7 @@ impl ArtifactApp {
             show_file_browser: false,
             browse_path: home_path,
             browse_entries: Vec::new(),
+            scan_log: Vec::new(),
         })
     }
 
@@ -208,6 +212,7 @@ impl ArtifactApp {
         self.selected_size = 0;
         self.error_message = None;
         self.scan_progress_data = None;
+        self.scan_log.clear();
 
         let (tx, rx) = channel();
         self.scan_receiver = Some(Arc::new(Mutex::new(rx)));
@@ -264,6 +269,12 @@ impl ArtifactApp {
         for msg in messages {
             match msg {
                 ScanMessage::Progress(progress) => {
+                    if !progress.current_path.is_empty() {
+                        if self.scan_log.len() >= 60 {
+                            self.scan_log.remove(0);
+                        }
+                        self.scan_log.push(progress.current_path.clone());
+                    }
                     self.scan_progress_data = Some(progress);
                     cx.notify();
                 }

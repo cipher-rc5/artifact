@@ -50,8 +50,8 @@ fn main() -> anyhow::Result<()> {
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(Bounds {
                     origin: Point {
-                        x: px(100.0),
-                        y: px(100.0),
+                        x: px(80.0),
+                        y: px(80.0),
                     },
                     size: size(px(window_width), px(window_height)),
                 })),

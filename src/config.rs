@@ -23,11 +23,11 @@ pub struct UiConfig {
 }
 
 fn default_window_width() -> f32 {
-    900.0
+    1200.0
 }
 
 fn default_window_height() -> f32 {
-    700.0
+    760.0
 }
 
 impl Default for UiConfig {
