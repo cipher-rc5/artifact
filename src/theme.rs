@@ -39,29 +39,29 @@ impl BentoTheme {
         // gpui's hsla() takes h in 0–1, NOT 0–360 degrees. Divide degrees by 360.
         let green = hsla(138.0 / 360.0, 1.0, 0.52, 1.0);
         Self {
-            bg_primary:       hsla(0.0, 0.0, 0.03, 1.0), // #080808
-            bg_secondary:     hsla(0.0, 0.0, 0.07, 1.0), // #121212 — panels, sidebar
-            bg_tertiary:      hsla(0.0, 0.0, 0.12, 1.0), // #1F1F1F — hover
-            bg_elevated:      hsla(0.0, 0.0, 0.09, 1.0), // #171717
-            border_primary:   hsla(0.0, 0.0, 0.18, 1.0), // #2E2E2E — visible hairlines
+            bg_primary: hsla(0.0, 0.0, 0.03, 1.0),       // #080808
+            bg_secondary: hsla(0.0, 0.0, 0.07, 1.0),     // #121212 — panels, sidebar
+            bg_tertiary: hsla(0.0, 0.0, 0.12, 1.0),      // #1F1F1F — hover
+            bg_elevated: hsla(0.0, 0.0, 0.09, 1.0),      // #171717
+            border_primary: hsla(0.0, 0.0, 0.18, 1.0),   // #2E2E2E — visible hairlines
             border_secondary: hsla(0.0, 0.0, 0.11, 1.0), // #1C1C1C — subtle dividers
-            border_focus:     green,
-            text_primary:     hsla(0.0, 0.0, 0.84, 1.0), // #D6D6D6
-            text_secondary:   hsla(0.0, 0.0, 0.55, 1.0), // #8C8C8C
-            text_tertiary:    hsla(0.0, 0.0, 0.40, 1.0), // #666666
-            text_inverse:     hsla(0.0, 0.0, 0.05, 1.0),
-            accent_green:     green,
-            accent_orange:    hsla(28.0  / 360.0, 1.0, 0.55, 1.0),
-            accent_red:       hsla(2.0   / 360.0, 0.9, 0.52, 1.0),
-            accent_blue:      hsla(195.0 / 360.0, 1.0, 0.52, 1.0),
-            accent_yellow:    hsla(50.0  / 360.0, 1.0, 0.55, 1.0),
-            accent_purple:    hsla(270.0 / 360.0, 0.8, 0.60, 1.0),
-            status_success:   green,
-            status_warning:   hsla(28.0  / 360.0, 1.0, 0.55, 1.0),
-            status_error:     hsla(2.0   / 360.0, 0.9, 0.52, 1.0),
-            status_info:      hsla(195.0 / 360.0, 1.0, 0.52, 1.0),
-            interactive_hover:    hsla(0.0, 0.0, 0.11, 1.0),
-            interactive_active:   hsla(0.0, 0.0, 0.16, 1.0),
+            border_focus: green,
+            text_primary: hsla(0.0, 0.0, 0.84, 1.0), // #D6D6D6
+            text_secondary: hsla(0.0, 0.0, 0.55, 1.0), // #8C8C8C
+            text_tertiary: hsla(0.0, 0.0, 0.40, 1.0), // #666666
+            text_inverse: hsla(0.0, 0.0, 0.05, 1.0),
+            accent_green: green,
+            accent_orange: hsla(28.0 / 360.0, 1.0, 0.55, 1.0),
+            accent_red: hsla(2.0 / 360.0, 0.9, 0.52, 1.0),
+            accent_blue: hsla(195.0 / 360.0, 1.0, 0.52, 1.0),
+            accent_yellow: hsla(50.0 / 360.0, 1.0, 0.55, 1.0),
+            accent_purple: hsla(270.0 / 360.0, 0.8, 0.60, 1.0),
+            status_success: green,
+            status_warning: hsla(28.0 / 360.0, 1.0, 0.55, 1.0),
+            status_error: hsla(2.0 / 360.0, 0.9, 0.52, 1.0),
+            status_info: hsla(195.0 / 360.0, 1.0, 0.52, 1.0),
+            interactive_hover: hsla(0.0, 0.0, 0.11, 1.0),
+            interactive_active: hsla(0.0, 0.0, 0.16, 1.0),
             interactive_disabled: hsla(0.0, 0.0, 0.18, 1.0),
         }
     }
@@ -148,12 +148,12 @@ pub struct Typography {
 impl Default for Typography {
     fn default() -> Self {
         Self {
-            size_xs:    px(10.0),
-            size_sm:    px(11.0),
-            size_md:    px(12.0),
-            size_lg:    px(13.0),
-            size_xl:    px(20.0),
-            size_xxl:   px(24.0),
+            size_xs: px(10.0),
+            size_sm: px(11.0),
+            size_md: px(12.0),
+            size_lg: px(13.0),
+            size_xl: px(20.0),
+            size_xxl: px(24.0),
             size_title: px(22.0),
         }
     }

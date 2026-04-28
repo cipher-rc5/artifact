@@ -118,7 +118,11 @@ pub struct Badge {
 
 impl Badge {
     pub fn new(label: impl Into<String>, color: Hsla, design: DesignSystem) -> Self {
-        Self { label: label.into(), color, design }
+        Self {
+            label: label.into(),
+            color,
+            design,
+        }
     }
 
     pub fn render(&self) -> Div {
@@ -126,12 +130,18 @@ impl Badge {
             .px(px(5.0))
             .py(px(2.0))
             .border_1()
-            .border_color(Hsla { a: 0.50, ..self.color })
+            .border_color(Hsla {
+                a: 0.50,
+                ..self.color
+            })
             .rounded(self.design.radius.xs)
             .child(
                 div()
                     .font_family("Menlo")
-                    .text_color(Hsla { a: 0.85, ..self.color })
+                    .text_color(Hsla {
+                        a: 0.85,
+                        ..self.color
+                    })
                     .text_size(self.design.typography.size_xs)
                     .child(self.label.to_uppercase()),
             )
@@ -149,12 +159,12 @@ pub struct StatBox {
 }
 
 impl StatBox {
-    pub fn new(
-        label: impl Into<String>,
-        value: impl Into<String>,
-        design: DesignSystem,
-    ) -> Self {
-        Self { label: label.into(), value: value.into(), design }
+    pub fn new(label: impl Into<String>, value: impl Into<String>, design: DesignSystem) -> Self {
+        Self {
+            label: label.into(),
+            value: value.into(),
+            design,
+        }
     }
 
     pub fn render(&self) -> Div {
@@ -194,7 +204,11 @@ pub struct Checkbox {
 
 impl Checkbox {
     pub fn new(label: impl Into<String>, checked: bool, design: DesignSystem) -> Self {
-        Self { label: label.into(), checked, design }
+        Self {
+            label: label.into(),
+            checked,
+            design,
+        }
     }
 
     pub fn render(
@@ -220,7 +234,11 @@ impl Checkbox {
                     .h(px(15.0))
                     .rounded_full()
                     .border_1()
-                    .border_color(if checked { green } else { d.colors.border_primary })
+                    .border_color(if checked {
+                        green
+                    } else {
+                        d.colors.border_primary
+                    })
                     .bg(if checked {
                         Hsla { a: 0.18, ..green }
                     } else {
@@ -236,14 +254,22 @@ impl Checkbox {
                             .h(px(10.0))
                             .rounded_full()
                             .flex_shrink_0()
-                            .bg(if checked { green } else { d.colors.text_tertiary })
+                            .bg(if checked {
+                                green
+                            } else {
+                                d.colors.text_tertiary
+                            })
                             .when(checked, |el| el.ml(px(13.0))),
                     ),
             )
             .child(
                 div()
                     .font_family("Menlo")
-                    .text_color(if checked { d.colors.text_primary } else { d.colors.text_secondary })
+                    .text_color(if checked {
+                        d.colors.text_primary
+                    } else {
+                        d.colors.text_secondary
+                    })
                     .text_size(d.typography.size_sm)
                     .child(self.label.to_uppercase()),
             )
@@ -266,7 +292,11 @@ impl Input {
         value: impl Into<String>,
         design: DesignSystem,
     ) -> Self {
-        Self { placeholder: placeholder.into(), value: value.into(), design }
+        Self {
+            placeholder: placeholder.into(),
+            value: value.into(),
+            design,
+        }
     }
 
     pub fn render(&self) -> Div {
@@ -310,7 +340,10 @@ impl Separator {
     }
 
     pub fn render(&self) -> Div {
-        div().h(px(1.0)).w_full().bg(self.design.colors.border_secondary)
+        div()
+            .h(px(1.0))
+            .w_full()
+            .bg(self.design.colors.border_secondary)
     }
 }
 
@@ -342,11 +375,10 @@ impl ProgressBar {
                     2 => 0.20,
                     _ => 0.08,
                 };
-                div()
-                    .w(px(12.0))
-                    .h_full()
-                    .flex_shrink_0()
-                    .bg(Hsla { a: alpha, ..d.colors.accent_green })
+                div().w(px(12.0)).h_full().flex_shrink_0().bg(Hsla {
+                    a: alpha,
+                    ..d.colors.accent_green
+                })
             }))
     }
 }

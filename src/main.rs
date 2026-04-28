@@ -6,9 +6,8 @@ mod app;
 mod view;
 
 use app::ArtifactApp;
-use gpui::*;
 use artifact::{AppConfig, LoggingConfig};
-use gpui_platform;
+use gpui::*;
 use tracing::info;
 use view::ArtifactView;
 
@@ -43,15 +42,15 @@ fn main() -> anyhow::Result<()> {
     let window_width = config.ui.window_width;
     let window_height = config.ui.window_height;
 
-    gpui_platform::application().run(move |cx: &mut App| {
+    Application::new().run(move |cx: &mut App| {
         let app_model = ArtifactApp::new(config.clone(), cx);
 
         cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(Bounds {
                     origin: Point {
-                        x: px(80.0),
-                        y: px(80.0),
+                        x: px(100.0),
+                        y: px(100.0),
                     },
                     size: size(px(window_width), px(window_height)),
                 })),

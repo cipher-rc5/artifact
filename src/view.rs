@@ -12,6 +12,14 @@ use artifact::utils;
 pub struct ArtifactView {
     app: Entity<ArtifactApp>,
     design: DesignSystem,
+    active_view: SidebarView,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SidebarView {
+    Overview,
+    Browser,
+    Activity,
 }
 
 impl ArtifactView {
@@ -21,15 +29,21 @@ impl ArtifactView {
         let app_clone = app.clone();
         cx.spawn(async move |_this, cx: &mut AsyncApp| {
             loop {
-                cx.background_executor().timer(Duration::from_millis(200)).await;
-                cx.update(|cx| {
+                cx.background_executor()
+                    .timer(Duration::from_millis(200))
+                    .await;
+                let _ = cx.update(|cx| {
                     app_clone.update(cx, |app, cx| app.check_scan_progress(cx));
                 });
             }
         })
         .detach();
 
-        Self { app, design: DesignSystem::new() }
+        Self {
+            app,
+            design: DesignSystem::new(),
+            active_view: SidebarView::Overview,
+        }
     }
 }
 
@@ -42,19 +56,19 @@ impl Render for ArtifactView {
         let app = self.app.read(cx);
         let d = self.design;
 
-        let scan_state    = app.scan_state();
-        let is_scanning   = scan_state == ScanState::Scanning;
-        let scan_path     = app.scan_path().to_string();
-        let total_size    = app.total_size();
+        let scan_state = app.scan_state();
+        let is_scanning = scan_state == ScanState::Scanning;
+        let scan_path = app.scan_path().to_string();
+        let total_size = app.total_size();
         let selected_size = app.selected_size();
         let deleted_count = app.deleted_count();
-        let error_msg     = app.error_message().map(|s| s.to_string());
-        let scan_nm       = app.scan_node_modules();
-        let scan_rt       = app.scan_rust_target();
+        let error_msg = app.error_message().map(|s| s.to_string());
+        let scan_nm = app.scan_node_modules();
+        let scan_rt = app.scan_rust_target();
         let show_orphaned = app.show_orphaned_only();
-        let progress      = app.scan_progress_data().cloned();
+        let progress = app.scan_progress_data().cloned();
         let file_browser_open = app.is_file_browser_open();
-        let browse_path   = app.browse_path().display().to_string();
+        let browse_path = app.browse_path().display().to_string();
         let browse_entries: Vec<_> = app
             .browse_entries()
             .iter()
@@ -77,20 +91,25 @@ impl Render for ArtifactView {
                 )
             })
             .collect();
-        let has_entries   = !dir_entries.is_empty();
+        let has_entries = !dir_entries.is_empty();
         let visible_count = dir_entries.len();
-        let total_count   = app.visible_entries().len();
+        let total_count = app.visible_entries().len();
         let max_bytes: u64 = dir_entries.iter().map(|e| e.4).max().unwrap_or(1).max(1);
+        let active_view = if file_browser_open {
+            SidebarView::Browser
+        } else {
+            self.active_view
+        };
         let _ = app;
 
         // Cloned handles for closures
-        let app_scan       = self.app.clone();
-        let app_sel_all    = self.app.clone();
-        let app_sel_none   = self.app.clone();
-        let app_delete     = self.app.clone();
-        let app_nm         = self.app.clone();
-        let app_rt         = self.app.clone();
-        let app_orph       = self.app.clone();
+        let app_scan = self.app.clone();
+        let app_sel_all = self.app.clone();
+        let app_sel_none = self.app.clone();
+        let app_delete = self.app.clone();
+        let app_nm = self.app.clone();
+        let app_rt = self.app.clone();
+        let app_orph = self.app.clone();
         let app_browse_open = self.app.clone();
 
         // Root: monospace font applied globally, flex row (sidebar | content)
@@ -102,7 +121,7 @@ impl Render for ArtifactView {
             .flex()
             .flex_row()
             // Sidebar
-            .child(Self::render_sidebar(d))
+            .child(self.render_sidebar(d, active_view, scan_state, cx))
             // Content area: topbar + panels
             .child(
                 div()
@@ -111,40 +130,71 @@ impl Render for ArtifactView {
                     .flex_1()
                     .min_w_0()
                     // Topbar
-                    .child(Self::render_topbar(d, scan_state, total_size, visible_count))
+                    .child(Self::render_topbar(
+                        d,
+                        scan_state,
+                        total_size,
+                        visible_count,
+                        active_view,
+                    ))
                     // Body panels
-                    .child(if is_scanning {
-                        Self::render_scan_view(d, progress.as_ref(), &scan_log)
-                    } else {
-                        Self::render_idle_view(
+                    .child(match active_view {
+                        SidebarView::Overview => {
+                            if is_scanning {
+                                Self::render_scan_view(d, progress.as_ref(), &scan_log)
+                            } else {
+                                Self::render_idle_view(
+                                    d,
+                                    scan_state,
+                                    &scan_path,
+                                    scan_nm,
+                                    scan_rt,
+                                    show_orphaned,
+                                    &dir_entries,
+                                    has_entries,
+                                    visible_count,
+                                    total_count,
+                                    total_size,
+                                    selected_size,
+                                    deleted_count,
+                                    error_msg.as_deref(),
+                                    file_browser_open,
+                                    &browse_path,
+                                    &browse_entries,
+                                    max_bytes,
+                                    &self.app,
+                                    app_scan,
+                                    app_sel_all,
+                                    app_sel_none,
+                                    app_delete,
+                                    app_nm,
+                                    app_rt,
+                                    app_orph,
+                                    app_browse_open,
+                                )
+                            }
+                        }
+                        SidebarView::Browser => Self::render_browser_view(
                             d,
-                            scan_state,
                             &scan_path,
+                            &browse_path,
+                            &browse_entries,
+                            file_browser_open,
                             scan_nm,
                             scan_rt,
                             show_orphaned,
-                            &dir_entries,
-                            has_entries,
-                            visible_count,
-                            total_count,
-                            total_size,
-                            selected_size,
-                            deleted_count,
-                            error_msg.as_deref(),
-                            file_browser_open,
-                            &browse_path,
-                            &browse_entries,
-                            max_bytes,
                             &self.app,
-                            app_scan,
-                            app_sel_all,
-                            app_sel_none,
-                            app_delete,
-                            app_nm,
-                            app_rt,
-                            app_orph,
-                            app_browse_open,
-                        )
+                        ),
+                        SidebarView::Activity => Self::render_activity_view(
+                            d,
+                            scan_state,
+                            progress.as_ref(),
+                            &scan_log,
+                            &scan_path,
+                            total_size,
+                            visible_count,
+                            selected_size,
+                        ),
                     }),
             )
     }
@@ -155,9 +205,41 @@ impl Render for ArtifactView {
 // ---------------------------------------------------------------------------
 
 impl ArtifactView {
-    fn render_sidebar(d: DesignSystem) -> Div {
+    fn activate_view(&mut self, view: SidebarView, cx: &mut Context<Self>) {
+        self.active_view = view;
+        cx.notify();
+    }
+
+    fn open_browser_view(&mut self, cx: &mut Context<Self>) {
+        self.active_view = SidebarView::Browser;
+        self.app.update(cx, |app, cx| {
+            if !app.is_file_browser_open() {
+                app.open_file_browser(cx);
+            }
+        });
+        cx.notify();
+    }
+
+    fn render_sidebar(
+        &self,
+        d: DesignSystem,
+        active_view: SidebarView,
+        scan_state: ScanState,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let status_label = match scan_state {
+            ScanState::Idle => "READY",
+            ScanState::Scanning => "SCAN ACTIVE",
+            ScanState::Complete => "RESULTS READY",
+        };
+        let status_color = match scan_state {
+            ScanState::Idle => d.colors.text_tertiary,
+            ScanState::Scanning => d.colors.accent_orange,
+            ScanState::Complete => d.colors.accent_green,
+        };
+
         div()
-            .w(px(40.0))
+            .w(px(176.0))
             .flex_shrink_0()
             .h_full()
             .bg(d.colors.bg_secondary)
@@ -165,15 +247,16 @@ impl ArtifactView {
             .border_color(d.colors.border_primary)
             .flex()
             .flex_col()
-            .items_center()
+            .items_start()
             // Logo mark
             .child(
                 div()
-                    .w(px(40.0))
-                    .h(px(40.0))
+                    .w_full()
+                    .h(px(56.0))
                     .flex()
                     .items_center()
-                    .justify_center()
+                    .gap(d.spacing.sm)
+                    .px(d.spacing.md)
                     .border_b_1()
                     .border_color(d.colors.border_primary)
                     .child(
@@ -193,6 +276,25 @@ impl ArtifactView {
                                     .font_weight(FontWeight::BOLD)
                                     .child("A"),
                             ),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(px(1.0))
+                            .child(
+                                div()
+                                    .text_color(d.colors.text_primary)
+                                    .text_size(d.typography.size_sm)
+                                    .font_weight(FontWeight::BOLD)
+                                    .child("ARTIFACT"),
+                            )
+                            .child(
+                                div()
+                                    .text_color(d.colors.text_tertiary)
+                                    .text_size(d.typography.size_xs)
+                                    .child("SPACE RECLAIM"),
+                            ),
                     ),
             )
             // Nav icons
@@ -200,38 +302,175 @@ impl ArtifactView {
                 div()
                     .flex()
                     .flex_col()
-                    .items_center()
-                    .gap(px(2.0))
-                    .pt(d.spacing.sm)
-                    .child(Self::sidebar_icon(d, "⊙", true))
-                    .child(Self::sidebar_icon(d, "≡", false))
-                    .child(Self::sidebar_icon(d, "◈", false)),
+                    .w_full()
+                    .gap(px(6.0))
+                    .p(d.spacing.md)
+                    .child(Self::sidebar_nav_item(
+                        d,
+                        "OV",
+                        "OVERVIEW",
+                        "SCAN + RESULTS",
+                        active_view == SidebarView::Overview,
+                        cx.listener(|this, _, _, cx| {
+                            this.activate_view(SidebarView::Overview, cx);
+                        }),
+                    ))
+                    .child(Self::sidebar_nav_item(
+                        d,
+                        "BR",
+                        "BROWSER",
+                        "TARGET DIRECTORY",
+                        active_view == SidebarView::Browser,
+                        cx.listener(|this, _, _, cx| {
+                            this.open_browser_view(cx);
+                        }),
+                    ))
+                    .child(Self::sidebar_nav_item(
+                        d,
+                        "LG",
+                        "ACTIVITY",
+                        "LIVE SCAN LOG",
+                        active_view == SidebarView::Activity,
+                        cx.listener(|this, _, _, cx| {
+                            this.activate_view(SidebarView::Activity, cx);
+                        }),
+                    )),
             )
-            // Settings at bottom
+            // Status at bottom
             .child(
                 div()
                     .flex_1()
                     .flex()
                     .flex_col()
                     .justify_end()
-                    .pb(d.spacing.sm)
-                    .child(Self::sidebar_icon(d, "⊛", false)),
+                    .p(d.spacing.md)
+                    .child(
+                        div()
+                            .w_full()
+                            .p(d.spacing.sm)
+                            .border_1()
+                            .border_color(d.colors.border_primary)
+                            .rounded(d.radius.sm)
+                            .bg(d.colors.bg_primary)
+                            .flex()
+                            .flex_col()
+                            .gap(px(6.0))
+                            .child(Self::panel_label(d, "SYSTEM_STATE"))
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(6.0))
+                                    .child(
+                                        div()
+                                            .w(px(6.0))
+                                            .h(px(6.0))
+                                            .rounded_full()
+                                            .bg(status_color),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(d.typography.size_sm)
+                                            .text_color(status_color)
+                                            .font_weight(FontWeight::BOLD)
+                                            .child(status_label),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .text_size(d.typography.size_xs)
+                                    .text_color(d.colors.text_tertiary)
+                                    .child("USE THE SIDEBAR TO SWITCH BETWEEN OVERVIEW, DIRECTORY BROWSER, AND ACTIVITY."),
+                            ),
+                    ),
             )
     }
 
-    fn sidebar_icon(d: DesignSystem, icon: &'static str, active: bool) -> Div {
+    fn sidebar_nav_item(
+        d: DesignSystem,
+        code: &'static str,
+        label: &'static str,
+        subtitle: &'static str,
+        active: bool,
+        on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    ) -> Stateful<Div> {
         div()
-            .w(px(32.0))
-            .h(px(32.0))
+            .id(ElementId::Name(format!("nav-{}", label).into()))
+            .w_full()
+            .px(d.spacing.sm)
+            .py(px(10.0))
             .flex()
             .items_center()
-            .justify_center()
+            .gap(d.spacing.sm)
             .rounded(d.radius.sm)
-            .text_color(if active { d.colors.accent_green } else { d.colors.text_tertiary })
-            .text_size(px(14.0))
-            .hover(|s| s.text_color(d.colors.text_secondary).bg(d.colors.interactive_hover))
+            .border_1()
+            .border_color(if active {
+                d.colors.accent_green
+            } else {
+                d.colors.border_primary
+            })
+            .bg(if active {
+                Hsla {
+                    a: 0.08,
+                    ..d.colors.accent_green
+                }
+            } else {
+                d.colors.bg_secondary
+            })
+            .hover(|s| s.bg(d.colors.interactive_hover))
+            .active(|s| s.bg(d.colors.interactive_active))
             .cursor_pointer()
-            .child(icon)
+            .on_click(move |event, window, cx| on_click(event, window, cx))
+            .child(
+                div()
+                    .w(px(26.0))
+                    .h(px(26.0))
+                    .flex_shrink_0()
+                    .rounded(d.radius.xs)
+                    .border_1()
+                    .border_color(if active {
+                        d.colors.accent_green
+                    } else {
+                        d.colors.border_secondary
+                    })
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(
+                        div()
+                            .text_size(d.typography.size_xs)
+                            .text_color(if active {
+                                d.colors.accent_green
+                            } else {
+                                d.colors.text_secondary
+                            })
+                            .font_weight(FontWeight::BOLD)
+                            .child(code),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(2.0))
+                    .child(
+                        div()
+                            .text_size(d.typography.size_sm)
+                            .text_color(if active {
+                                d.colors.text_primary
+                            } else {
+                                d.colors.text_secondary
+                            })
+                            .font_weight(FontWeight::BOLD)
+                            .child(label),
+                    )
+                    .child(
+                        div()
+                            .text_size(d.typography.size_xs)
+                            .text_color(d.colors.text_tertiary)
+                            .child(subtitle),
+                    ),
+            )
     }
 }
 
@@ -245,14 +484,20 @@ impl ArtifactView {
         scan_state: ScanState,
         total_size: u64,
         item_count: usize,
+        active_view: SidebarView,
     ) -> Div {
+        let view_label = match active_view {
+            SidebarView::Overview => "OVERVIEW",
+            SidebarView::Browser => "BROWSER",
+            SidebarView::Activity => "ACTIVITY",
+        };
         let status_label = match scan_state {
-            ScanState::Idle     => "IDLE",
+            ScanState::Idle => "IDLE",
             ScanState::Scanning => "SCANNING",
             ScanState::Complete => "COMPLETE",
         };
         let status_color = match scan_state {
-            ScanState::Idle     => d.colors.text_tertiary,
+            ScanState::Idle => d.colors.text_tertiary,
             ScanState::Scanning => d.colors.accent_orange,
             ScanState::Complete => d.colors.accent_green,
         };
@@ -279,7 +524,7 @@ impl ArtifactView {
                             .gap(d.spacing.sm)
                             .child(
                                 div()
-                                    .text_size(d.typography.size_title)
+                                    .text_size(d.typography.size_xl)
                                     .font_weight(FontWeight::BOLD)
                                     .text_color(d.colors.text_primary)
                                     .child("ARTIFACT"),
@@ -288,7 +533,7 @@ impl ArtifactView {
                                 div()
                                     .text_size(d.typography.size_xs)
                                     .text_color(d.colors.accent_green)
-                                    .child("GPUI CLEANER v0.1.0"),
+                                    .child("SPACE RECLAIM WORKBENCH"),
                             ),
                     )
                     // Spacer
@@ -299,7 +544,18 @@ impl ArtifactView {
                             .flex()
                             .items_center()
                             .gap(d.spacing.lg)
-                            .child(Self::topbar_stat(d, "SCAN_STATUS", status_label, status_color))
+                            .child(Self::topbar_stat(
+                                d,
+                                "ACTIVE_VIEW",
+                                view_label,
+                                d.colors.text_primary,
+                            ))
+                            .child(Self::topbar_stat(
+                                d,
+                                "SCAN_STATUS",
+                                status_label,
+                                status_color,
+                            ))
                             .child(Self::topbar_stat(
                                 d,
                                 "ITEMS_FOUND",
@@ -404,12 +660,17 @@ impl ArtifactView {
                                     .flex()
                                     .items_center()
                                     .gap(d.spacing.sm)
-                                    .child(div().flex_1().child(Input::new("SCAN_PATH...", scan_path, d).render()))
+                                    .child(
+                                        div().flex_1().child(
+                                            Input::new("SCAN_PATH...", scan_path, d).render(),
+                                        ),
+                                    )
                                     .child(
                                         Button::new("Browse", d)
                                             .variant(ButtonVariant::Secondary)
                                             .render("btn-browse", move |_, _, cx| {
-                                                app_browse_open.update(cx, |a, cx| a.open_file_browser(cx));
+                                                app_browse_open
+                                                    .update(cx, |a, cx| a.open_file_browser(cx));
                                             }),
                                     ),
                             )
@@ -431,23 +692,29 @@ impl ArtifactView {
                                             app_rt.update(cx, |a, cx| a.toggle_rust_target(cx));
                                         },
                                     ))
-                                    .child(Checkbox::new("orphaned only", show_orphaned, d).render(
-                                        "cb-orph",
-                                        move |_, _, cx| {
-                                            app_orph.update(cx, |a, cx| a.toggle_orphaned_only(cx));
-                                        },
-                                    )),
+                                    .child(
+                                        Checkbox::new("orphaned only", show_orphaned, d).render(
+                                            "cb-orph",
+                                            move |_, _, cx| {
+                                                app_orph
+                                                    .update(cx, |a, cx| a.toggle_orphaned_only(cx));
+                                            },
+                                        ),
+                                    ),
                             )
                             // Scan button
-                            .child(
-                                Button::new("Scan", d).render("btn-scan", move |_, _, cx| {
-                                    app_scan.update(cx, |a, cx| a.start_scan(cx));
-                                }),
-                            ),
+                            .child(Button::new("Scan", d).render("btn-scan", move |_, _, cx| {
+                                app_scan.update(cx, |a, cx| a.start_scan(cx));
+                            })),
                     )
                     // File browser (replaces artifact list when open)
                     .when(file_browser_open, |root| {
-                        root.child(Self::render_file_browser(d, browse_path, browse_entries, app))
+                        root.child(Self::render_file_browser(
+                            d,
+                            browse_path,
+                            browse_entries,
+                            app,
+                        ))
                     })
                     // ARTIFACT_DIRECTORY list
                     .when(!file_browser_open, |root| {
@@ -468,6 +735,8 @@ impl ArtifactView {
             // ── Right panel (stats + controls) ───────────────────────────
             .child(Self::render_stats_panel(
                 d,
+                scan_state,
+                visible_count,
                 total_size,
                 selected_size,
                 deleted_count,
@@ -530,25 +799,27 @@ impl ArtifactView {
                                 .flex()
                                 .items_center()
                                 .gap(px(6.0))
+                                .child(Button::new("All", d).variant(ButtonVariant::Ghost).render(
+                                    "btn-sel-all",
+                                    move |_, _, cx| {
+                                        app_sel_all.update(cx, |a, cx| a.select_all(cx));
+                                    },
+                                ))
                                 .child(
-                                    Button::new("All", d)
-                                        .variant(ButtonVariant::Ghost)
-                                        .render("btn-sel-all", move |_, _, cx| {
-                                            app_sel_all.update(cx, |a, cx| a.select_all(cx));
-                                        }),
-                                )
-                                .child(
-                                    Button::new("None", d)
-                                        .variant(ButtonVariant::Ghost)
-                                        .render("btn-sel-none", move |_, _, cx| {
+                                    Button::new("None", d).variant(ButtonVariant::Ghost).render(
+                                        "btn-sel-none",
+                                        move |_, _, cx| {
                                             app_sel_none.update(cx, |a, cx| a.select_none(cx));
-                                        }),
+                                        },
+                                    ),
                                 ),
                         )
                     }),
             )
             // Scrollable list
-            .child(Self::render_dir_rows(d, scan_state, entries, max_bytes, app))
+            .child(Self::render_dir_rows(
+                d, scan_state, entries, max_bytes, app,
+            ))
     }
 
     fn render_dir_rows(
@@ -573,7 +844,7 @@ impl ArtifactView {
                     .text_color(d.colors.text_tertiary)
                     .text_size(d.typography.size_sm)
                     .child(match scan_state {
-                        ScanState::Idle     => "RUN_SCAN TO FIND BUILD ARTIFACTS",
+                        ScanState::Idle => "RUN_SCAN TO FIND BUILD ARTIFACTS",
                         ScanState::Scanning => "SCANNING...",
                         ScanState::Complete => "NO_ARTIFACTS FOUND",
                     }),
@@ -588,7 +859,7 @@ impl ArtifactView {
 
                 let badge_color = match dir_type {
                     DirectoryType::NodeModules => d.colors.accent_green,
-                    DirectoryType::RustTarget  => d.colors.accent_orange,
+                    DirectoryType::RustTarget => d.colors.accent_orange,
                 };
                 let badge_label = dir_type.to_string();
                 let size_str = utils::format_size(size_bytes);
@@ -608,7 +879,12 @@ impl ArtifactView {
                         .border_b_1()
                         .border_color(d.colors.border_secondary)
                         .cursor_pointer()
-                        .when(selected, |el| el.bg(Hsla { a: 0.08, ..d.colors.accent_green }))
+                        .when(selected, |el| {
+                            el.bg(Hsla {
+                                a: 0.08,
+                                ..d.colors.accent_green
+                            })
+                        })
                         .hover(|s| s.bg(d.colors.interactive_hover))
                         .on_click(move |_, _, cx| {
                             app_toggle.update(cx, |a, cx| a.toggle_selection(idx, cx));
@@ -696,6 +972,8 @@ impl ArtifactView {
 impl ArtifactView {
     fn render_stats_panel(
         d: DesignSystem,
+        scan_state: ScanState,
+        visible_count: usize,
         total_size: u64,
         selected_size: u64,
         deleted_count: usize,
@@ -703,6 +981,17 @@ impl ArtifactView {
         has_entries: bool,
         app_delete: Entity<ArtifactApp>,
     ) -> Div {
+        let status_label = match scan_state {
+            ScanState::Idle => "READY_TO_SCAN",
+            ScanState::Scanning => "SCAN_RUNNING",
+            ScanState::Complete => "RESULTS_READY",
+        };
+        let status_color = match scan_state {
+            ScanState::Idle => d.colors.text_tertiary,
+            ScanState::Scanning => d.colors.accent_orange,
+            ScanState::Complete => d.colors.accent_green,
+        };
+
         div()
             .w(px(240.0))
             .flex_shrink_0()
@@ -758,9 +1047,24 @@ impl ArtifactView {
                     .flex()
                     .flex_col()
                     .gap(d.spacing.sm)
-                    .child(Self::stat_row(d, "SELECTED_SIZE", &utils::format_size(selected_size), d.colors.accent_green))
-                    .child(Self::stat_row(d, "ITEMS_DELETED", &deleted_count.to_string(), d.colors.text_secondary))
-                    .child(Self::stat_row(d, "ITEMS_FOUND", &format!("{}", if total_size > 0 { "–" } else { "0" }), d.colors.text_tertiary)),
+                    .child(Self::stat_row(
+                        d,
+                        "SELECTED_SIZE",
+                        &utils::format_size(selected_size),
+                        d.colors.accent_green,
+                    ))
+                    .child(Self::stat_row(
+                        d,
+                        "ITEMS_DELETED",
+                        &deleted_count.to_string(),
+                        d.colors.text_secondary,
+                    ))
+                    .child(Self::stat_row(
+                        d,
+                        "ITEMS_FOUND",
+                        &visible_count.to_string(),
+                        d.colors.text_secondary,
+                    )),
             )
             // Status indicator
             .child(
@@ -783,8 +1087,8 @@ impl ArtifactView {
                     .child(
                         div()
                             .text_size(d.typography.size_xs)
-                            .text_color(d.colors.accent_green)
-                            .child("LINK_DIRECT"),
+                            .text_color(status_color)
+                            .child(status_label),
                     ),
             )
             // Spacer
@@ -801,7 +1105,10 @@ impl ArtifactView {
                         .border_1()
                         .border_color(d.colors.accent_orange)
                         .rounded(d.radius.sm)
-                        .bg(Hsla { a: 0.08, ..d.colors.accent_orange })
+                        .bg(Hsla {
+                            a: 0.08,
+                            ..d.colors.accent_orange
+                        })
                         .child(
                             div()
                                 .text_size(d.typography.size_xs)
@@ -812,17 +1119,14 @@ impl ArtifactView {
             })
             // Delete button
             .child(
-                div()
-                    .flex_shrink_0()
-                    .p(d.spacing.md)
-                    .child(
-                        Button::new("Delete Selected", d)
-                            .variant(ButtonVariant::Danger)
-                            .disabled(selected_size == 0 || !has_entries)
-                            .render("btn-delete", move |_, _, cx| {
-                                app_delete.update(cx, |a, cx| a.delete_selected(cx));
-                            }),
-                    ),
+                div().flex_shrink_0().p(d.spacing.md).child(
+                    Button::new("Delete Selected", d)
+                        .variant(ButtonVariant::Danger)
+                        .disabled(selected_size == 0 || !has_entries)
+                        .render("btn-delete", move |_, _, cx| {
+                            app_delete.update(cx, |a, cx| a.delete_selected(cx));
+                        }),
+                ),
             )
     }
 
@@ -843,6 +1147,339 @@ impl ArtifactView {
                     .text_color(value_color)
                     .font_weight(FontWeight::BOLD)
                     .child(value.to_string()),
+            )
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Browser view
+// ---------------------------------------------------------------------------
+
+impl ArtifactView {
+    fn render_browser_view(
+        d: DesignSystem,
+        scan_path: &str,
+        browse_path: &str,
+        browse_entries: &[(String, PathBuf)],
+        file_browser_open: bool,
+        scan_nm: bool,
+        scan_rt: bool,
+        show_orphaned: bool,
+        app: &Entity<ArtifactApp>,
+    ) -> Div {
+        let app_open = app.clone();
+
+        div()
+            .flex()
+            .flex_row()
+            .flex_1()
+            .min_h_0()
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_h_0()
+                    .when(file_browser_open, |root| {
+                        root.child(Self::render_file_browser(
+                            d,
+                            browse_path,
+                            browse_entries,
+                            app,
+                        ))
+                    })
+                    .when(!file_browser_open, |root| {
+                        root.child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .flex_1()
+                                .items_center()
+                                .justify_center()
+                                .gap(d.spacing.md)
+                                .child(
+                                    div()
+                                        .text_size(d.typography.size_xl)
+                                        .font_weight(FontWeight::BOLD)
+                                        .text_color(d.colors.text_primary)
+                                        .child("DIRECTORY_BROWSER"),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(d.typography.size_sm)
+                                        .text_color(d.colors.text_tertiary)
+                                        .child("OPEN THE BROWSER TO CHANGE THE ROOT SCAN PATH."),
+                                )
+                                .child(
+                                    Button::new("Open Browser", d)
+                                        .variant(ButtonVariant::Secondary)
+                                        .render("btn-browser-open", move |_, _, cx| {
+                                            app_open.update(cx, |a, cx| a.open_file_browser(cx));
+                                        }),
+                                ),
+                        )
+                    }),
+            )
+            .child(
+                div()
+                    .w(px(260.0))
+                    .flex_shrink_0()
+                    .h_full()
+                    .bg(d.colors.bg_secondary)
+                    .border_l_1()
+                    .border_color(d.colors.border_primary)
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .h(px(36.0))
+                            .flex()
+                            .items_center()
+                            .px(d.spacing.md)
+                            .border_b_1()
+                            .border_color(d.colors.border_primary)
+                            .child(Self::panel_label(d, "BROWSER_CONTEXT")),
+                    )
+                    .child(
+                        div()
+                            .p(d.spacing.md)
+                            .flex()
+                            .flex_col()
+                            .gap(d.spacing.md)
+                            .child(Self::stat_row(
+                                d,
+                                "SCAN_ROOT",
+                                &truncate_path(scan_path, 24),
+                                d.colors.text_primary,
+                            ))
+                            .child(Self::stat_row(
+                                d,
+                                "BROWSE_PATH",
+                                &truncate_path(browse_path, 24),
+                                d.colors.text_secondary,
+                            ))
+                            .child(Self::stat_row(
+                                d,
+                                "NODE_MODULES",
+                                if scan_nm { "ENABLED" } else { "OFF" },
+                                if scan_nm {
+                                    d.colors.accent_green
+                                } else {
+                                    d.colors.text_tertiary
+                                },
+                            ))
+                            .child(Self::stat_row(
+                                d,
+                                "RUST_TARGET",
+                                if scan_rt { "ENABLED" } else { "OFF" },
+                                if scan_rt {
+                                    d.colors.accent_green
+                                } else {
+                                    d.colors.text_tertiary
+                                },
+                            ))
+                            .child(Self::stat_row(
+                                d,
+                                "ORPHAN_FILTER",
+                                if show_orphaned { "ONLY" } else { "ALL" },
+                                if show_orphaned {
+                                    d.colors.accent_orange
+                                } else {
+                                    d.colors.text_secondary
+                                },
+                            )),
+                    ),
+            )
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Activity view
+// ---------------------------------------------------------------------------
+
+impl ArtifactView {
+    fn render_activity_view(
+        d: DesignSystem,
+        scan_state: ScanState,
+        progress: Option<&crate::app::ScanProgress>,
+        scan_log: &[String],
+        scan_path: &str,
+        total_size: u64,
+        visible_count: usize,
+        selected_size: u64,
+    ) -> Div {
+        let (dirs, items, current_path, elapsed) = match progress {
+            Some(p) => (
+                p.directories_scanned,
+                p.items_found,
+                p.current_path.clone(),
+                p.elapsed_secs,
+            ),
+            None => (0, visible_count, String::new(), 0.0),
+        };
+
+        let state_label = match scan_state {
+            ScanState::Idle => "IDLE",
+            ScanState::Scanning => "SCANNING",
+            ScanState::Complete => "COMPLETE",
+        };
+        let state_color = match scan_state {
+            ScanState::Idle => d.colors.text_tertiary,
+            ScanState::Scanning => d.colors.accent_orange,
+            ScanState::Complete => d.colors.accent_green,
+        };
+
+        let mut recent_log = div()
+            .id("activity-log")
+            .flex()
+            .flex_col()
+            .flex_1()
+            .overflow_y_scroll()
+            .p(d.spacing.sm)
+            .gap(px(1.0));
+
+        if scan_log.is_empty() {
+            recent_log = recent_log.child(
+                div()
+                    .p(d.spacing.sm)
+                    .text_size(d.typography.size_sm)
+                    .text_color(d.colors.text_tertiary)
+                    .child("NO_SCAN_ACTIVITY_YET"),
+            );
+        } else {
+            recent_log = recent_log.children(scan_log.iter().map(|path| {
+                div()
+                    .px(d.spacing.sm)
+                    .py(px(4.0))
+                    .border_b_1()
+                    .border_color(d.colors.border_secondary)
+                    .text_size(d.typography.size_xs)
+                    .text_color(d.colors.text_secondary)
+                    .overflow_x_hidden()
+                    .child(truncate_path(path, 46))
+            }));
+        }
+
+        div()
+            .flex()
+            .flex_row()
+            .flex_1()
+            .min_h_0()
+            .child(
+                div()
+                    .w(px(260.0))
+                    .flex_shrink_0()
+                    .flex()
+                    .flex_col()
+                    .border_r_1()
+                    .border_color(d.colors.border_primary)
+                    .child(
+                        div()
+                            .h(px(36.0))
+                            .flex()
+                            .items_center()
+                            .px(d.spacing.md)
+                            .border_b_1()
+                            .border_color(d.colors.border_primary)
+                            .child(Self::panel_label(d, "SCAN_ACTIVITY")),
+                    )
+                    .child(
+                        div()
+                            .p(d.spacing.md)
+                            .flex()
+                            .flex_col()
+                            .gap(d.spacing.sm)
+                            .child(Self::stat_row(d, "STATE", state_label, state_color))
+                            .child(Self::stat_row(
+                                d,
+                                "TARGET",
+                                &truncate_path(scan_path, 26),
+                                d.colors.text_secondary,
+                            ))
+                            .child(Self::stat_row(
+                                d,
+                                "DIRS_SCANNED",
+                                &format_number(dirs),
+                                d.colors.text_secondary,
+                            ))
+                            .child(Self::stat_row(
+                                d,
+                                "ITEMS_FOUND",
+                                &items.to_string(),
+                                d.colors.accent_green,
+                            ))
+                            .child(Self::stat_row(
+                                d,
+                                "RECLAIMABLE",
+                                &utils::format_size(total_size),
+                                d.colors.text_primary,
+                            ))
+                            .child(Self::stat_row(
+                                d,
+                                "SELECTED",
+                                &utils::format_size(selected_size),
+                                d.colors.text_secondary,
+                            ))
+                            .child(Self::stat_row(
+                                d,
+                                "ELAPSED",
+                                &utils::format_elapsed(elapsed),
+                                d.colors.text_tertiary,
+                            )),
+                    ),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .justify_center()
+                    .gap(d.spacing.md)
+                    .child(
+                        div()
+                            .text_size(px(32.0))
+                            .font_weight(FontWeight::BOLD)
+                            .text_color(state_color)
+                            .child(state_label),
+                    )
+                    .child(
+                        div()
+                            .text_size(d.typography.size_sm)
+                            .text_color(d.colors.text_tertiary)
+                            .child(if current_path.is_empty() {
+                                "RUN A SCAN TO STREAM DIRECTORY ACTIVITY HERE".to_string()
+                            } else {
+                                truncate_path(&current_path, 72)
+                            }),
+                    )
+                    .when(scan_state == ScanState::Scanning, |panel| {
+                        panel.child(
+                            div()
+                                .w(px(280.0))
+                                .child(ProgressBar::new(d).render_indeterminate()),
+                        )
+                    }),
+            )
+            .child(
+                div()
+                    .w(px(320.0))
+                    .flex_shrink_0()
+                    .flex()
+                    .flex_col()
+                    .border_l_1()
+                    .border_color(d.colors.border_primary)
+                    .child(
+                        div()
+                            .h(px(36.0))
+                            .flex()
+                            .items_center()
+                            .px(d.spacing.md)
+                            .border_b_1()
+                            .border_color(d.colors.border_primary)
+                            .child(Self::panel_label(d, "RECENT_PATHS")),
+                    )
+                    .child(recent_log),
             )
     }
 }
@@ -904,11 +1541,36 @@ impl ArtifactView {
                             .flex_col()
                             .gap(d.spacing.sm)
                             .p(d.spacing.md)
-                            .child(Self::scan_stat_row(d, "ITEMS_FOUND", &items.to_string(), d.colors.accent_green))
-                            .child(Self::scan_stat_row(d, "DIRS_SCANNED", &format_number(dirs), d.colors.text_secondary))
-                            .child(Self::scan_stat_row(d, "SIZE_FOUND", &utils::format_size(size_found), d.colors.text_secondary))
-                            .child(Self::scan_stat_row(d, "ELAPSED", &utils::format_elapsed(elapsed), d.colors.text_tertiary))
-                            .child(Self::scan_stat_row(d, "SCAN_RATE", &rate, d.colors.text_tertiary)),
+                            .child(Self::scan_stat_row(
+                                d,
+                                "ITEMS_FOUND",
+                                &items.to_string(),
+                                d.colors.accent_green,
+                            ))
+                            .child(Self::scan_stat_row(
+                                d,
+                                "DIRS_SCANNED",
+                                &format_number(dirs),
+                                d.colors.text_secondary,
+                            ))
+                            .child(Self::scan_stat_row(
+                                d,
+                                "SIZE_FOUND",
+                                &utils::format_size(size_found),
+                                d.colors.text_secondary,
+                            ))
+                            .child(Self::scan_stat_row(
+                                d,
+                                "ELAPSED",
+                                &utils::format_elapsed(elapsed),
+                                d.colors.text_tertiary,
+                            ))
+                            .child(Self::scan_stat_row(
+                                d,
+                                "SCAN_RATE",
+                                &rate,
+                                d.colors.text_tertiary,
+                            )),
                     )
                     .child(
                         div()
@@ -1100,10 +1762,14 @@ impl ArtifactView {
             );
         } else {
             for (name, path) in entries {
-                let app_nav  = app.clone();
+                let app_nav = app.clone();
                 let nav_path = path.clone();
                 let is_parent = name == "..";
-                let label = if is_parent { "../".to_string() } else { format!("{}/", name) };
+                let label = if is_parent {
+                    "../".to_string()
+                } else {
+                    format!("{}/", name)
+                };
 
                 list = list.child(
                     div()
@@ -1173,9 +1839,12 @@ impl ArtifactView {
                                 app_cancel.update(cx, |a, cx| a.close_file_browser(cx));
                             }),
                     )
-                    .child(Button::new("Select", d).render("btn-browse-select", move |_, _, cx| {
-                        app_select.update(cx, |a, cx| a.browse_select(cx));
-                    })),
+                    .child(Button::new("Select", d).render(
+                        "btn-browse-select",
+                        move |_, _, cx| {
+                            app_select.update(cx, |a, cx| a.browse_select(cx));
+                        },
+                    )),
             )
     }
 }

@@ -7,7 +7,7 @@ use tracing::{debug, info};
 use walkdir::WalkDir;
 
 use crate::directory_item::{DirectoryItem, DirectoryType};
-use crate::error::{Result, ArtifactError};
+use crate::error::{ArtifactError, Result};
 
 pub struct Scanner {
     root: PathBuf,

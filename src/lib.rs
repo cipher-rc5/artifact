@@ -16,7 +16,7 @@ pub mod utils;
 pub use config::AppConfig;
 pub use database::{DeletionDatabase, DeletionRecord, DeletionStatistics};
 pub use directory_item::{DirectoryItem, DirectoryType};
-pub use error::{Result, ArtifactError};
+pub use error::{ArtifactError, Result};
 pub use logging::{LoggingConfig, LoggingGuard};
 pub use scanner::Scanner;
 pub use theme::{BentoTheme, DesignSystem};

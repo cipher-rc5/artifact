@@ -11,7 +11,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{debug, info, instrument};
 
 use crate::directory_item::DirectoryType;
-use crate::error::{Result, ArtifactError};
+use crate::error::{ArtifactError, Result};
 
 const DB_FILE: &str = "artifact.redb";
 const SCHEMA_VERSION: i64 = 1;
