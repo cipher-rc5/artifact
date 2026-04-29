@@ -64,10 +64,7 @@ impl DeletionRecord {
         Self {
             id: 0,
             path: path.to_string_lossy().to_string(),
-            dir_type: match dir_type {
-                DirectoryType::NodeModules => "node_modules".to_string(),
-                DirectoryType::RustTarget => "rust_target".to_string(),
-            },
+            dir_type: dir_type.name().to_string(),
             size_bytes: size_bytes as i64,
             project_root: project_root.map(|p| p.to_string_lossy().to_string()),
             project_name,

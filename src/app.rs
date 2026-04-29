@@ -4,6 +4,7 @@
 
 use gpui::*;
 use parking_lot::Mutex;
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, channel};
@@ -14,6 +15,7 @@ use tracing::{debug, error, info, warn};
 use artifact::config::AppConfig;
 use artifact::database::{DeletionDatabase, DeletionRecord};
 use artifact::directory_item::DirectoryItem;
+use artifact::rules;
 use artifact::scanner::Scanner;
 use artifact::utils;
 
@@ -60,8 +62,7 @@ enum ScanMessage {
 pub struct ArtifactApp {
     // Scan state
     scan_path: String,
-    scan_node_modules: bool,
-    scan_rust_target: bool,
+    enabled_rules: HashSet<String>,
     scan_state: ScanState,
     scan_progress_data: Option<ScanProgress>,
     scan_receiver: Option<Arc<Mutex<Receiver<ScanMessage>>>>,
@@ -104,11 +105,11 @@ impl ArtifactApp {
     pub fn scan_path(&self) -> &str {
         &self.scan_path
     }
-    pub fn scan_node_modules(&self) -> bool {
-        self.scan_node_modules
+    pub fn is_rule_enabled(&self, name: &str) -> bool {
+        self.enabled_rules.contains(name)
     }
-    pub fn scan_rust_target(&self) -> bool {
-        self.scan_rust_target
+    pub fn enabled_rule_count(&self) -> usize {
+        self.enabled_rules.len()
     }
     pub fn total_size(&self) -> u64 {
         self.total_size
@@ -163,10 +164,12 @@ impl ArtifactApp {
 
         let home_path = PathBuf::from(&home);
 
+        let enabled_rules: HashSet<String> =
+            rules::RULES.iter().map(|r| r.name.to_string()).collect();
+
         cx.new(|_cx| Self {
             scan_path: home.clone(),
-            scan_node_modules: true,
-            scan_rust_target: true,
+            enabled_rules,
             scan_state: ScanState::Idle,
             scan_progress_data: None,
             scan_receiver: None,
@@ -186,13 +189,12 @@ impl ArtifactApp {
 
     // -- Scan option toggles ------------------------------------------------
 
-    pub fn toggle_node_modules(&mut self, cx: &mut Context<Self>) {
-        self.scan_node_modules = !self.scan_node_modules;
-        cx.notify();
-    }
-
-    pub fn toggle_rust_target(&mut self, cx: &mut Context<Self>) {
-        self.scan_rust_target = !self.scan_rust_target;
+    pub fn toggle_rule(&mut self, name: &str, cx: &mut Context<Self>) {
+        if self.enabled_rules.contains(name) {
+            self.enabled_rules.remove(name);
+        } else {
+            self.enabled_rules.insert(name.to_string());
+        }
         cx.notify();
     }
 
@@ -218,16 +220,13 @@ impl ArtifactApp {
         self.scan_receiver = Some(Arc::new(Mutex::new(rx)));
 
         let scan_path = self.scan_path.clone();
-        let scan_node_modules = self.scan_node_modules;
-        let scan_rust_target = self.scan_rust_target;
+        let enabled_rules: Vec<String> = self.enabled_rules.iter().cloned().collect();
         let start_time = Instant::now();
 
         thread::spawn(move || {
-            let scanner = Scanner::new(PathBuf::from(&scan_path));
+            let scanner = Scanner::with_enabled(PathBuf::from(&scan_path), enabled_rules);
 
             match scanner.scan_with_progress(
-                scan_node_modules,
-                scan_rust_target,
                 |dirs_scanned, items_found, current_path, total_size| {
                     let elapsed = start_time.elapsed().as_secs_f64();
                     let _ = tx.send(ScanMessage::Progress(ScanProgress {

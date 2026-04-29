@@ -6,8 +6,20 @@ use std::time::Duration;
 use crate::app::{ArtifactApp, ScanState};
 use artifact::components::*;
 use artifact::directory_item::DirectoryType;
+use artifact::rules::{self, ColorHint};
 use artifact::theme::{DesignSystem, Gradients};
 use artifact::utils;
+
+fn rule_color(d: DesignSystem, hint: ColorHint) -> Hsla {
+    match hint {
+        ColorHint::Green => d.colors.accent_green,
+        ColorHint::Orange => d.colors.accent_orange,
+        ColorHint::Blue => d.colors.accent_blue,
+        ColorHint::Yellow => d.colors.accent_yellow,
+        ColorHint::Purple => d.colors.accent_purple,
+        ColorHint::Red => d.colors.accent_red,
+    }
+}
 
 pub struct ArtifactView {
     app: Entity<ArtifactApp>,
@@ -63,8 +75,11 @@ impl Render for ArtifactView {
         let selected_size = app.selected_size();
         let deleted_count = app.deleted_count();
         let error_msg = app.error_message().map(|s| s.to_string());
-        let scan_nm = app.scan_node_modules();
-        let scan_rt = app.scan_rust_target();
+        let enabled_rule_names: Vec<(&'static str, bool)> = rules::RULES
+            .iter()
+            .map(|r| (r.name, app.is_rule_enabled(r.name)))
+            .collect();
+        let enabled_rule_count = app.enabled_rule_count();
         let show_orphaned = app.show_orphaned_only();
         let progress = app.scan_progress_data().cloned();
         let file_browser_open = app.is_file_browser_open();
@@ -107,28 +122,29 @@ impl Render for ArtifactView {
         let app_sel_all = self.app.clone();
         let app_sel_none = self.app.clone();
         let app_delete = self.app.clone();
-        let app_nm = self.app.clone();
-        let app_rt = self.app.clone();
         let app_orph = self.app.clone();
         let app_browse_open = self.app.clone();
 
-        // Root: monospace font applied globally, flex row (sidebar | content)
+        // Root: bento canvas — padded background, sans body, sidebar + content cards with a gutter
         div()
             .size_full()
-            .font_family("Menlo")
+            .font_family("Helvetica")
             .bg(d.colors.bg_primary)
             .text_color(d.colors.text_primary)
+            .p(d.spacing.md)
+            .gap(d.spacing.md)
             .flex()
             .flex_row()
-            // Sidebar
+            // Sidebar (card)
             .child(self.render_sidebar(d, active_view, scan_state, cx))
-            // Content area: topbar + panels
+            // Content area: topbar + panels (card)
             .child(
                 div()
                     .flex()
                     .flex_col()
                     .flex_1()
                     .min_w_0()
+                    .gap(d.spacing.md)
                     // Topbar
                     .child(Self::render_topbar(
                         d,
@@ -147,8 +163,7 @@ impl Render for ArtifactView {
                                     d,
                                     scan_state,
                                     &scan_path,
-                                    scan_nm,
-                                    scan_rt,
+                                    &enabled_rule_names,
                                     show_orphaned,
                                     &dir_entries,
                                     has_entries,
@@ -167,8 +182,6 @@ impl Render for ArtifactView {
                                     app_sel_all,
                                     app_sel_none,
                                     app_delete,
-                                    app_nm,
-                                    app_rt,
                                     app_orph,
                                     app_browse_open,
                                 )
@@ -180,8 +193,7 @@ impl Render for ArtifactView {
                             &browse_path,
                             &browse_entries,
                             file_browser_open,
-                            scan_nm,
-                            scan_rt,
+                            enabled_rule_count,
                             show_orphaned,
                             &self.app,
                         ),
@@ -228,9 +240,9 @@ impl ArtifactView {
         cx: &mut Context<Self>,
     ) -> Div {
         let status_label = match scan_state {
-            ScanState::Idle => "READY",
-            ScanState::Scanning => "SCAN ACTIVE",
-            ScanState::Complete => "RESULTS READY",
+            ScanState::Idle => "Ready",
+            ScanState::Scanning => "Scan active",
+            ScanState::Complete => "Results ready",
         };
         let status_color = match scan_state {
             ScanState::Idle => d.colors.text_tertiary,
@@ -239,40 +251,37 @@ impl ArtifactView {
         };
 
         div()
-            .w(px(176.0))
+            .w(px(220.0))
             .flex_shrink_0()
             .h_full()
             .bg(d.colors.bg_secondary)
-            .border_r_1()
-            .border_color(d.colors.border_primary)
+            .rounded(d.radius.md)
             .flex()
             .flex_col()
             .items_start()
+            .overflow_hidden()
             // Logo mark
             .child(
                 div()
                     .w_full()
-                    .h(px(56.0))
+                    .h(px(72.0))
                     .flex()
                     .items_center()
                     .gap(d.spacing.sm)
-                    .px(d.spacing.md)
-                    .border_b_1()
-                    .border_color(d.colors.border_primary)
+                    .px(d.spacing.lg)
                     .child(
                         div()
-                            .w(px(22.0))
-                            .h(px(22.0))
-                            .rounded_full()
-                            .border_1()
-                            .border_color(d.colors.accent_green)
+                            .w(px(28.0))
+                            .h(px(28.0))
+                            .rounded(d.radius.sm)
+                            .bg(d.colors.accent_green)
                             .flex()
                             .items_center()
                             .justify_center()
                             .child(
                                 div()
-                                    .text_color(d.colors.accent_green)
-                                    .text_size(px(10.0))
+                                    .text_color(d.colors.bg_primary)
+                                    .text_size(d.typography.size_md)
                                     .font_weight(FontWeight::BOLD)
                                     .child("A"),
                             ),
@@ -285,31 +294,31 @@ impl ArtifactView {
                             .child(
                                 div()
                                     .text_color(d.colors.text_primary)
-                                    .text_size(d.typography.size_sm)
-                                    .font_weight(FontWeight::BOLD)
-                                    .child("ARTIFACT"),
+                                    .text_size(d.typography.size_lg)
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child("Artifact"),
                             )
                             .child(
                                 div()
                                     .text_color(d.colors.text_tertiary)
                                     .text_size(d.typography.size_xs)
-                                    .child("SPACE RECLAIM"),
+                                    .child("Space reclaim"),
                             ),
                     ),
             )
-            // Nav icons
+            // Nav
             .child(
                 div()
                     .flex()
                     .flex_col()
                     .w_full()
-                    .gap(px(6.0))
-                    .p(d.spacing.md)
+                    .gap(px(4.0))
+                    .px(d.spacing.sm)
+                    .pt(d.spacing.sm)
                     .child(Self::sidebar_nav_item(
                         d,
-                        "OV",
-                        "OVERVIEW",
-                        "SCAN + RESULTS",
+                        "Overview",
+                        "Scan + results",
                         active_view == SidebarView::Overview,
                         cx.listener(|this, _, _, cx| {
                             this.activate_view(SidebarView::Overview, cx);
@@ -317,9 +326,8 @@ impl ArtifactView {
                     ))
                     .child(Self::sidebar_nav_item(
                         d,
-                        "BR",
-                        "BROWSER",
-                        "TARGET DIRECTORY",
+                        "Browser",
+                        "Target directory",
                         active_view == SidebarView::Browser,
                         cx.listener(|this, _, _, cx| {
                             this.open_browser_view(cx);
@@ -327,9 +335,8 @@ impl ArtifactView {
                     ))
                     .child(Self::sidebar_nav_item(
                         d,
-                        "LG",
-                        "ACTIVITY",
-                        "LIVE SCAN LOG",
+                        "Activity",
+                        "Live scan log",
                         active_view == SidebarView::Activity,
                         cx.listener(|this, _, _, cx| {
                             this.activate_view(SidebarView::Activity, cx);
@@ -343,44 +350,32 @@ impl ArtifactView {
                     .flex()
                     .flex_col()
                     .justify_end()
-                    .p(d.spacing.md)
+                    .p(d.spacing.sm)
                     .child(
                         div()
                             .w_full()
-                            .p(d.spacing.sm)
-                            .border_1()
-                            .border_color(d.colors.border_primary)
+                            .p(d.spacing.md)
                             .rounded(d.radius.sm)
-                            .bg(d.colors.bg_primary)
+                            .bg(d.colors.bg_tertiary)
                             .flex()
                             .flex_col()
-                            .gap(px(6.0))
+                            .gap(px(8.0))
                             .child(Self::panel_label(d, "SYSTEM_STATE"))
                             .child(
                                 div()
                                     .flex()
                                     .items_center()
-                                    .gap(px(6.0))
+                                    .gap(px(8.0))
                                     .child(
-                                        div()
-                                            .w(px(6.0))
-                                            .h(px(6.0))
-                                            .rounded_full()
-                                            .bg(status_color),
+                                        div().w(px(8.0)).h(px(8.0)).rounded_full().bg(status_color),
                                     )
                                     .child(
                                         div()
                                             .text_size(d.typography.size_sm)
-                                            .text_color(status_color)
-                                            .font_weight(FontWeight::BOLD)
+                                            .text_color(d.colors.text_primary)
+                                            .font_weight(FontWeight::MEDIUM)
                                             .child(status_label),
                                     ),
-                            )
-                            .child(
-                                div()
-                                    .text_size(d.typography.size_xs)
-                                    .text_color(d.colors.text_tertiary)
-                                    .child("USE THE SIDEBAR TO SWITCH BETWEEN OVERVIEW, DIRECTORY BROWSER, AND ACTIVITY."),
                             ),
                     ),
             )
@@ -388,7 +383,6 @@ impl ArtifactView {
 
     fn sidebar_nav_item(
         d: DesignSystem,
-        code: &'static str,
         label: &'static str,
         subtitle: &'static str,
         active: bool,
@@ -397,25 +391,19 @@ impl ArtifactView {
         div()
             .id(ElementId::Name(format!("nav-{}", label).into()))
             .w_full()
-            .px(d.spacing.sm)
-            .py(px(10.0))
+            .px(d.spacing.md)
+            .py(d.spacing.sm)
             .flex()
-            .items_center()
-            .gap(d.spacing.sm)
+            .flex_col()
+            .gap(px(2.0))
             .rounded(d.radius.sm)
-            .border_1()
-            .border_color(if active {
-                d.colors.accent_green
-            } else {
-                d.colors.border_primary
-            })
             .bg(if active {
-                Hsla {
-                    a: 0.08,
-                    ..d.colors.accent_green
-                }
+                d.colors.bg_tertiary
             } else {
-                d.colors.bg_secondary
+                Hsla {
+                    a: 0.0,
+                    ..d.colors.bg_secondary
+                }
             })
             .hover(|s| s.bg(d.colors.interactive_hover))
             .active(|s| s.bg(d.colors.interactive_active))
@@ -423,53 +411,24 @@ impl ArtifactView {
             .on_click(move |event, window, cx| on_click(event, window, cx))
             .child(
                 div()
-                    .w(px(26.0))
-                    .h(px(26.0))
-                    .flex_shrink_0()
-                    .rounded(d.radius.xs)
-                    .border_1()
-                    .border_color(if active {
-                        d.colors.accent_green
+                    .text_size(d.typography.size_md)
+                    .text_color(if active {
+                        d.colors.text_primary
                     } else {
-                        d.colors.border_secondary
+                        d.colors.text_secondary
                     })
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(
-                        div()
-                            .text_size(d.typography.size_xs)
-                            .text_color(if active {
-                                d.colors.accent_green
-                            } else {
-                                d.colors.text_secondary
-                            })
-                            .font_weight(FontWeight::BOLD)
-                            .child(code),
-                    ),
+                    .font_weight(if active {
+                        FontWeight::SEMIBOLD
+                    } else {
+                        FontWeight::MEDIUM
+                    })
+                    .child(label),
             )
             .child(
                 div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(2.0))
-                    .child(
-                        div()
-                            .text_size(d.typography.size_sm)
-                            .text_color(if active {
-                                d.colors.text_primary
-                            } else {
-                                d.colors.text_secondary
-                            })
-                            .font_weight(FontWeight::BOLD)
-                            .child(label),
-                    )
-                    .child(
-                        div()
-                            .text_size(d.typography.size_xs)
-                            .text_color(d.colors.text_tertiary)
-                            .child(subtitle),
-                    ),
+                    .text_size(d.typography.size_xs)
+                    .text_color(d.colors.text_tertiary)
+                    .child(subtitle),
             )
     }
 }
@@ -487,14 +446,14 @@ impl ArtifactView {
         active_view: SidebarView,
     ) -> Div {
         let view_label = match active_view {
-            SidebarView::Overview => "OVERVIEW",
-            SidebarView::Browser => "BROWSER",
-            SidebarView::Activity => "ACTIVITY",
+            SidebarView::Overview => "Overview",
+            SidebarView::Browser => "Browser",
+            SidebarView::Activity => "Activity",
         };
         let status_label = match scan_state {
-            ScanState::Idle => "IDLE",
-            ScanState::Scanning => "SCANNING",
-            ScanState::Complete => "COMPLETE",
+            ScanState::Idle => "Idle",
+            ScanState::Scanning => "Scanning",
+            ScanState::Complete => "Complete",
         };
         let status_color = match scan_state {
             ScanState::Idle => d.colors.text_tertiary,
@@ -503,93 +462,73 @@ impl ArtifactView {
         };
 
         div()
-            .flex()
-            .flex_col()
             .flex_shrink_0()
-            // Brand row
+            .h(px(64.0))
+            .px(d.spacing.lg)
+            .flex()
+            .items_center()
+            .gap(d.spacing.lg)
+            .bg(d.colors.bg_secondary)
+            .rounded(d.radius.md)
+            // Brand
             .child(
                 div()
-                    .h(px(40.0))
                     .flex()
-                    .items_center()
-                    .px(d.spacing.md)
-                    .gap(d.spacing.lg)
-                    .border_b_1()
-                    .border_color(d.colors.border_primary)
-                    // Brand
+                    .flex_col()
                     .child(
                         div()
-                            .flex()
-                            .items_center()
-                            .gap(d.spacing.sm)
-                            .child(
-                                div()
-                                    .text_size(d.typography.size_xl)
-                                    .font_weight(FontWeight::BOLD)
-                                    .text_color(d.colors.text_primary)
-                                    .child("ARTIFACT"),
-                            )
-                            .child(
-                                div()
-                                    .text_size(d.typography.size_xs)
-                                    .text_color(d.colors.accent_green)
-                                    .child("SPACE RECLAIM WORKBENCH"),
-                            ),
+                            .text_size(d.typography.size_xl)
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(d.colors.text_primary)
+                            .child(view_label),
                     )
-                    // Spacer
-                    .child(div().flex_1())
-                    // Right stats
                     .child(
                         div()
-                            .flex()
-                            .items_center()
-                            .gap(d.spacing.lg)
-                            .child(Self::topbar_stat(
-                                d,
-                                "ACTIVE_VIEW",
-                                view_label,
-                                d.colors.text_primary,
-                            ))
-                            .child(Self::topbar_stat(
-                                d,
-                                "SCAN_STATUS",
-                                status_label,
-                                status_color,
-                            ))
-                            .child(Self::topbar_stat(
-                                d,
-                                "ITEMS_FOUND",
-                                &item_count.to_string(),
-                                d.colors.text_secondary,
-                            ))
-                            .child(Self::topbar_stat(
-                                d,
-                                "TOTAL_SIZE",
-                                &utils::format_size(total_size),
-                                d.colors.text_secondary,
-                            )),
+                            .text_size(d.typography.size_xs)
+                            .text_color(d.colors.text_tertiary)
+                            .child("Space reclaim workbench"),
                     ),
             )
-            // Green accent line
-            .child(div().h(px(1.0)).w_full().bg(Gradients::header()))
+            // Spacer
+            .child(div().flex_1())
+            // Right stats
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(d.spacing.lg)
+                    .child(Self::topbar_stat(d, "Status", status_label, status_color))
+                    .child(Self::topbar_stat(
+                        d,
+                        "Items",
+                        &item_count.to_string(),
+                        d.colors.text_primary,
+                    ))
+                    .child(Self::topbar_stat(
+                        d,
+                        "Total",
+                        &utils::format_size(total_size),
+                        d.colors.text_primary,
+                    )),
+            )
     }
 
     fn topbar_stat(d: DesignSystem, label: &'static str, value: &str, value_color: Hsla) -> Div {
         div()
             .flex()
-            .items_center()
-            .gap(px(5.0))
+            .flex_col()
+            .gap(px(2.0))
             .child(
                 div()
                     .text_size(d.typography.size_xs)
                     .text_color(d.colors.text_tertiary)
-                    .child(label),
+                    .child(prettify_label(label)),
             )
             .child(
                 div()
-                    .text_size(d.typography.size_xs)
+                    .text_size(d.typography.size_md)
                     .text_color(value_color)
-                    .font_weight(FontWeight::BOLD)
+                    .font_weight(FontWeight::SEMIBOLD)
                     .child(value.to_string()),
             )
     }
@@ -605,8 +544,7 @@ impl ArtifactView {
         d: DesignSystem,
         scan_state: ScanState,
         scan_path: &str,
-        scan_nm: bool,
-        scan_rt: bool,
+        enabled_rule_names: &[(&'static str, bool)],
         show_orphaned: bool,
         dir_entries: &[(usize, String, DirectoryType, String, u64, bool, bool)],
         has_entries: bool,
@@ -625,8 +563,6 @@ impl ArtifactView {
         app_sel_all: Entity<ArtifactApp>,
         app_sel_none: Entity<ArtifactApp>,
         app_delete: Entity<ArtifactApp>,
-        app_nm: Entity<ArtifactApp>,
-        app_rt: Entity<ArtifactApp>,
         app_orph: Entity<ArtifactApp>,
         app_browse_open: Entity<ArtifactApp>,
     ) -> Div {
@@ -635,6 +571,7 @@ impl ArtifactView {
             .flex_row()
             .flex_1()
             .min_h_0()
+            .gap(d.spacing.md)
             // ── Left panel (scan config + artifact list) ──────────────────
             .child(
                 div()
@@ -643,16 +580,17 @@ impl ArtifactView {
                     .flex_1()
                     .min_w_0()
                     .min_h_0()
+                    .bg(d.colors.bg_secondary)
+                    .rounded(d.radius.md)
+                    .overflow_hidden()
                     // SCAN_CONFIG section
                     .child(
                         div()
                             .flex_shrink_0()
-                            .border_b_1()
-                            .border_color(d.colors.border_primary)
-                            .p(d.spacing.md)
+                            .p(d.spacing.lg)
                             .flex()
                             .flex_col()
-                            .gap(d.spacing.sm)
+                            .gap(d.spacing.md)
                             .child(Self::panel_label(d, "SCAN_CONFIG"))
                             // Path + browse
                             .child(
@@ -674,33 +612,19 @@ impl ArtifactView {
                                             }),
                                     ),
                             )
-                            // Toggles row
+                            // Rule chip-toggle row (wraps)
+                            .child(Self::render_rule_chips(d, enabled_rule_names, app))
+                            // Orphaned-only filter
                             .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap(d.spacing.lg)
-                                    .child(Checkbox::new("node_modules", scan_nm, d).render(
-                                        "cb-nm",
+                                div().flex().items_center().child(
+                                    Checkbox::new("orphaned only", show_orphaned, d).render(
+                                        "cb-orph",
                                         move |_, _, cx| {
-                                            app_nm.update(cx, |a, cx| a.toggle_node_modules(cx));
+                                            app_orph
+                                                .update(cx, |a, cx| a.toggle_orphaned_only(cx));
                                         },
-                                    ))
-                                    .child(Checkbox::new("rust target", scan_rt, d).render(
-                                        "cb-rt",
-                                        move |_, _, cx| {
-                                            app_rt.update(cx, |a, cx| a.toggle_rust_target(cx));
-                                        },
-                                    ))
-                                    .child(
-                                        Checkbox::new("orphaned only", show_orphaned, d).render(
-                                            "cb-orph",
-                                            move |_, _, cx| {
-                                                app_orph
-                                                    .update(cx, |a, cx| a.toggle_orphaned_only(cx));
-                                            },
-                                        ),
                                     ),
+                                ),
                             )
                             // Scan button
                             .child(Button::new("Scan", d).render("btn-scan", move |_, _, cx| {
@@ -747,6 +671,81 @@ impl ArtifactView {
     }
 }
 
+impl ArtifactView {
+    fn render_rule_chips(
+        d: DesignSystem,
+        enabled_rule_names: &[(&'static str, bool)],
+        app: &Entity<ArtifactApp>,
+    ) -> Div {
+        let mut row = div()
+            .flex()
+            .flex_row()
+            .flex_wrap()
+            .gap(px(6.0));
+
+        for (name, enabled) in enabled_rule_names {
+            let Some(rule) = rules::find(name) else {
+                continue;
+            };
+            let color = rule_color(d, rule.color_hint);
+            let enabled = *enabled;
+            let app_chip = app.clone();
+            let rule_name = rule.name;
+
+            let chip = div()
+                .id(ElementId::Name(format!("chip-{}", rule_name).into()))
+                .px(d.spacing.md)
+                .py(px(6.0))
+                .rounded_full()
+                .cursor_pointer()
+                .flex()
+                .items_center()
+                .gap(px(6.0))
+                .bg(if enabled {
+                    Hsla { a: 0.16, ..color }
+                } else {
+                    d.colors.bg_tertiary
+                })
+                .border_1()
+                .border_color(if enabled {
+                    Hsla { a: 0.45, ..color }
+                } else {
+                    d.colors.border_secondary
+                })
+                .hover(|s| s.bg(d.colors.interactive_hover))
+                .on_click(move |_, _, cx| {
+                    app_chip.update(cx, |a, cx| a.toggle_rule(rule_name, cx));
+                })
+                .child(
+                    div()
+                        .w(px(6.0))
+                        .h(px(6.0))
+                        .rounded_full()
+                        .bg(if enabled { color } else { d.colors.text_tertiary }),
+                )
+                .child(
+                    div()
+                        .text_size(d.typography.size_xs)
+                        .text_color(if enabled {
+                            d.colors.text_primary
+                        } else {
+                            d.colors.text_tertiary
+                        })
+                        .font_weight(if enabled {
+                            FontWeight::SEMIBOLD
+                        } else {
+                            FontWeight::MEDIUM
+                        })
+                        .child(rule.language),
+                );
+
+            row = row.child(chip);
+        }
+
+        row
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Artifact directory list
 // ---------------------------------------------------------------------------
@@ -776,10 +775,8 @@ impl ArtifactView {
                     .flex()
                     .items_center()
                     .justify_between()
-                    .px(d.spacing.md)
-                    .py(d.spacing.sm)
-                    .border_b_1()
-                    .border_color(d.colors.border_primary)
+                    .px(d.spacing.lg)
+                    .py(d.spacing.md)
                     .child(
                         div()
                             .flex()
@@ -790,7 +787,7 @@ impl ArtifactView {
                                 div()
                                     .text_size(d.typography.size_xs)
                                     .text_color(d.colors.text_tertiary)
-                                    .child(format!("{} OF {}", visible_count, total_count)),
+                                    .child(format!("{} of {}", visible_count, total_count)),
                             ),
                     )
                     .when(has_entries, |row| {
@@ -835,7 +832,10 @@ impl ArtifactView {
             .flex_col()
             .flex_1()
             .min_h_0()
-            .overflow_y_scroll();
+            .overflow_y_scroll()
+            .px(d.spacing.md)
+            .pb(d.spacing.md)
+            .gap(px(4.0));
 
         if entries.is_empty() {
             list = list.child(
@@ -844,9 +844,9 @@ impl ArtifactView {
                     .text_color(d.colors.text_tertiary)
                     .text_size(d.typography.size_sm)
                     .child(match scan_state {
-                        ScanState::Idle => "RUN_SCAN TO FIND BUILD ARTIFACTS",
-                        ScanState::Scanning => "SCANNING...",
-                        ScanState::Complete => "NO_ARTIFACTS FOUND",
+                        ScanState::Idle => "Run a scan to find build artifacts",
+                        ScanState::Scanning => "Scanning…",
+                        ScanState::Complete => "No artifacts found",
                     }),
             );
         } else {
@@ -857,11 +857,8 @@ impl ArtifactView {
                 let selected = *selected;
                 let is_orphaned = *is_orphaned;
 
-                let badge_color = match dir_type {
-                    DirectoryType::NodeModules => d.colors.accent_green,
-                    DirectoryType::RustTarget => d.colors.accent_orange,
-                };
-                let badge_label = dir_type.to_string();
+                let badge_color = rule_color(d, dir_type.rule.color_hint);
+                let badge_label = dir_type.rule.language.to_string();
                 let size_str = utils::format_size(size_bytes);
 
                 // Compute filled block count (0-5) proportional to max
@@ -874,14 +871,13 @@ impl ArtifactView {
                         .flex()
                         .items_center()
                         .px(d.spacing.md)
-                        .py(px(6.0))
+                        .py(d.spacing.sm)
                         .gap(d.spacing.sm)
-                        .border_b_1()
-                        .border_color(d.colors.border_secondary)
+                        .rounded(d.radius.sm)
                         .cursor_pointer()
                         .when(selected, |el| {
                             el.bg(Hsla {
-                                a: 0.08,
+                                a: 0.14,
                                 ..d.colors.accent_green
                             })
                         })
@@ -892,8 +888,8 @@ impl ArtifactView {
                         // Selected indicator bar
                         .child(
                             div()
-                                .w(px(2.0))
-                                .h(px(28.0))
+                                .w(px(3.0))
+                                .h(px(32.0))
                                 .flex_shrink_0()
                                 .rounded_full()
                                 .bg(if selected {
@@ -912,6 +908,7 @@ impl ArtifactView {
                                 .min_w_0()
                                 .child(
                                     div()
+                                        .font_family("Menlo")
                                         .text_size(d.typography.size_sm)
                                         .text_color(if selected {
                                             d.colors.text_primary
@@ -939,7 +936,7 @@ impl ArtifactView {
                                                 div()
                                                     .text_size(d.typography.size_xs)
                                                     .text_color(d.colors.accent_orange)
-                                                    .child("ORPHANED"),
+                                                    .child("Orphaned"),
                                             )
                                         }),
                                 ),
@@ -947,9 +944,10 @@ impl ArtifactView {
                         // Size value
                         .child(
                             div()
+                                .font_family("Menlo")
                                 .text_size(d.typography.size_sm)
                                 .text_color(badge_color)
-                                .font_weight(FontWeight::BOLD)
+                                .font_weight(FontWeight::SEMIBOLD)
                                 .flex_shrink_0()
                                 .child(size_str),
                         )
@@ -982,9 +980,9 @@ impl ArtifactView {
         app_delete: Entity<ArtifactApp>,
     ) -> Div {
         let status_label = match scan_state {
-            ScanState::Idle => "READY_TO_SCAN",
-            ScanState::Scanning => "SCAN_RUNNING",
-            ScanState::Complete => "RESULTS_READY",
+            ScanState::Idle => "Ready to scan",
+            ScanState::Scanning => "Scan running",
+            ScanState::Complete => "Results ready",
         };
         let status_color = match scan_state {
             ScanState::Idle => d.colors.text_tertiary,
@@ -993,46 +991,50 @@ impl ArtifactView {
         };
 
         div()
-            .w(px(240.0))
+            .w(px(280.0))
             .flex_shrink_0()
             .h_full()
             .bg(d.colors.bg_secondary)
-            .border_l_1()
-            .border_color(d.colors.border_primary)
+            .rounded(d.radius.md)
+            .overflow_hidden()
             .flex()
             .flex_col()
             // Header
             .child(
                 div()
                     .flex_shrink_0()
-                    .h(px(36.0))
+                    .h(px(48.0))
                     .flex()
                     .items_center()
-                    .px(d.spacing.md)
-                    .border_b_1()
-                    .border_color(d.colors.border_primary)
+                    .px(d.spacing.lg)
                     .child(Self::panel_label(d, "SYSTEM_RESULTS")),
             )
             // Total reclaimable (hero stat)
             .child(
                 div()
                     .flex_shrink_0()
-                    .p(d.spacing.md)
-                    .border_b_1()
-                    .border_color(d.colors.border_primary)
+                    .mx(d.spacing.md)
+                    .mb(d.spacing.md)
+                    .p(d.spacing.lg)
+                    .rounded(d.radius.sm)
+                    .bg(Gradients::green_card(&d.colors))
                     .flex()
                     .flex_col()
-                    .gap(px(4.0))
+                    .gap(px(6.0))
                     .child(
                         div()
                             .text_size(d.typography.size_xs)
-                            .text_color(d.colors.text_tertiary)
-                            .child("TOTAL_RECLAIMABLE"),
+                            .text_color(Hsla {
+                                a: 0.65,
+                                ..d.colors.accent_green
+                            })
+                            .child("Total reclaimable"),
                     )
                     .child(
                         div()
-                            .text_size(px(32.0))
-                            .font_weight(FontWeight::BOLD)
+                            .font_family("Helvetica")
+                            .text_size(d.typography.size_title)
+                            .font_weight(FontWeight::SEMIBOLD)
                             .text_color(d.colors.text_primary)
                             .child(utils::format_size(total_size)),
                     ),
@@ -1041,9 +1043,8 @@ impl ArtifactView {
             .child(
                 div()
                     .flex_shrink_0()
-                    .p(d.spacing.md)
-                    .border_b_1()
-                    .border_color(d.colors.border_primary)
+                    .px(d.spacing.lg)
+                    .pb(d.spacing.md)
                     .flex()
                     .flex_col()
                     .gap(d.spacing.sm)
@@ -1070,24 +1071,23 @@ impl ArtifactView {
             .child(
                 div()
                     .flex_shrink_0()
+                    .mx(d.spacing.lg)
                     .px(d.spacing.md)
                     .py(d.spacing.sm)
-                    .border_b_1()
-                    .border_color(d.colors.border_primary)
+                    .rounded_full()
+                    .bg(Hsla {
+                        a: 0.10,
+                        ..status_color
+                    })
                     .flex()
                     .items_center()
-                    .gap(px(6.0))
-                    .child(
-                        div()
-                            .w(px(6.0))
-                            .h(px(6.0))
-                            .rounded_full()
-                            .bg(d.colors.accent_green),
-                    )
+                    .gap(px(8.0))
+                    .child(div().w(px(8.0)).h(px(8.0)).rounded_full().bg(status_color))
                     .child(
                         div()
                             .text_size(d.typography.size_xs)
                             .text_color(status_color)
+                            .font_weight(FontWeight::MEDIUM)
                             .child(status_label),
                     ),
             )
@@ -1099,14 +1099,12 @@ impl ArtifactView {
                 panel.child(
                     div()
                         .flex_shrink_0()
-                        .mx(d.spacing.md)
+                        .mx(d.spacing.lg)
                         .mb(d.spacing.sm)
-                        .p(d.spacing.sm)
-                        .border_1()
-                        .border_color(d.colors.accent_orange)
+                        .p(d.spacing.md)
                         .rounded(d.radius.sm)
                         .bg(Hsla {
-                            a: 0.08,
+                            a: 0.10,
                             ..d.colors.accent_orange
                         })
                         .child(
@@ -1119,7 +1117,7 @@ impl ArtifactView {
             })
             // Delete button
             .child(
-                div().flex_shrink_0().p(d.spacing.md).child(
+                div().flex_shrink_0().p(d.spacing.lg).child(
                     Button::new("Delete Selected", d)
                         .variant(ButtonVariant::Danger)
                         .disabled(selected_size == 0 || !has_entries)
@@ -1139,13 +1137,13 @@ impl ArtifactView {
                 div()
                     .text_size(d.typography.size_xs)
                     .text_color(d.colors.text_tertiary)
-                    .child(label),
+                    .child(prettify_label(label)),
             )
             .child(
                 div()
                     .text_size(d.typography.size_sm)
                     .text_color(value_color)
-                    .font_weight(FontWeight::BOLD)
+                    .font_weight(FontWeight::SEMIBOLD)
                     .child(value.to_string()),
             )
     }
@@ -1162,8 +1160,7 @@ impl ArtifactView {
         browse_path: &str,
         browse_entries: &[(String, PathBuf)],
         file_browser_open: bool,
-        scan_nm: bool,
-        scan_rt: bool,
+        enabled_rule_count: usize,
         show_orphaned: bool,
         app: &Entity<ArtifactApp>,
     ) -> Div {
@@ -1174,12 +1171,16 @@ impl ArtifactView {
             .flex_row()
             .flex_1()
             .min_h_0()
+            .gap(d.spacing.md)
             .child(
                 div()
                     .flex()
                     .flex_col()
                     .flex_1()
                     .min_h_0()
+                    .bg(d.colors.bg_secondary)
+                    .rounded(d.radius.md)
+                    .overflow_hidden()
                     .when(file_browser_open, |root| {
                         root.child(Self::render_file_browser(
                             d,
@@ -1200,15 +1201,15 @@ impl ArtifactView {
                                 .child(
                                     div()
                                         .text_size(d.typography.size_xl)
-                                        .font_weight(FontWeight::BOLD)
+                                        .font_weight(FontWeight::SEMIBOLD)
                                         .text_color(d.colors.text_primary)
-                                        .child("DIRECTORY_BROWSER"),
+                                        .child("Directory browser"),
                                 )
                                 .child(
                                     div()
                                         .text_size(d.typography.size_sm)
                                         .text_color(d.colors.text_tertiary)
-                                        .child("OPEN THE BROWSER TO CHANGE THE ROOT SCAN PATH."),
+                                        .child("Open the browser to change the root scan path."),
                                 )
                                 .child(
                                     Button::new("Open Browser", d)
@@ -1222,27 +1223,26 @@ impl ArtifactView {
             )
             .child(
                 div()
-                    .w(px(260.0))
+                    .w(px(280.0))
                     .flex_shrink_0()
                     .h_full()
                     .bg(d.colors.bg_secondary)
-                    .border_l_1()
-                    .border_color(d.colors.border_primary)
+                    .rounded(d.radius.md)
+                    .overflow_hidden()
                     .flex()
                     .flex_col()
                     .child(
                         div()
-                            .h(px(36.0))
+                            .h(px(48.0))
                             .flex()
                             .items_center()
-                            .px(d.spacing.md)
-                            .border_b_1()
-                            .border_color(d.colors.border_primary)
+                            .px(d.spacing.lg)
                             .child(Self::panel_label(d, "BROWSER_CONTEXT")),
                     )
                     .child(
                         div()
-                            .p(d.spacing.md)
+                            .px(d.spacing.lg)
+                            .pb(d.spacing.lg)
                             .flex()
                             .flex_col()
                             .gap(d.spacing.md)
@@ -1260,19 +1260,9 @@ impl ArtifactView {
                             ))
                             .child(Self::stat_row(
                                 d,
-                                "NODE_MODULES",
-                                if scan_nm { "ENABLED" } else { "OFF" },
-                                if scan_nm {
-                                    d.colors.accent_green
-                                } else {
-                                    d.colors.text_tertiary
-                                },
-                            ))
-                            .child(Self::stat_row(
-                                d,
-                                "RUST_TARGET",
-                                if scan_rt { "ENABLED" } else { "OFF" },
-                                if scan_rt {
+                                "RULES_ENABLED",
+                                &format!("{} of {}", enabled_rule_count, rules::RULES.len()),
+                                if enabled_rule_count > 0 {
                                     d.colors.accent_green
                                 } else {
                                     d.colors.text_tertiary
@@ -1281,7 +1271,7 @@ impl ArtifactView {
                             .child(Self::stat_row(
                                 d,
                                 "ORPHAN_FILTER",
-                                if show_orphaned { "ONLY" } else { "ALL" },
+                                if show_orphaned { "Only" } else { "All" },
                                 if show_orphaned {
                                     d.colors.accent_orange
                                 } else {
@@ -1319,9 +1309,9 @@ impl ArtifactView {
         };
 
         let state_label = match scan_state {
-            ScanState::Idle => "IDLE",
-            ScanState::Scanning => "SCANNING",
-            ScanState::Complete => "COMPLETE",
+            ScanState::Idle => "Idle",
+            ScanState::Scanning => "Scanning",
+            ScanState::Complete => "Complete",
         };
         let state_color = match scan_state {
             ScanState::Idle => d.colors.text_tertiary,
@@ -1344,15 +1334,14 @@ impl ArtifactView {
                     .p(d.spacing.sm)
                     .text_size(d.typography.size_sm)
                     .text_color(d.colors.text_tertiary)
-                    .child("NO_SCAN_ACTIVITY_YET"),
+                    .child("No scan activity yet"),
             );
         } else {
             recent_log = recent_log.children(scan_log.iter().map(|path| {
                 div()
+                    .font_family("Menlo")
                     .px(d.spacing.sm)
                     .py(px(4.0))
-                    .border_b_1()
-                    .border_color(d.colors.border_secondary)
                     .text_size(d.typography.size_xs)
                     .text_color(d.colors.text_secondary)
                     .overflow_x_hidden()
@@ -1365,27 +1354,28 @@ impl ArtifactView {
             .flex_row()
             .flex_1()
             .min_h_0()
+            .gap(d.spacing.md)
             .child(
                 div()
-                    .w(px(260.0))
+                    .w(px(280.0))
                     .flex_shrink_0()
                     .flex()
                     .flex_col()
-                    .border_r_1()
-                    .border_color(d.colors.border_primary)
+                    .bg(d.colors.bg_secondary)
+                    .rounded(d.radius.md)
+                    .overflow_hidden()
                     .child(
                         div()
-                            .h(px(36.0))
+                            .h(px(48.0))
                             .flex()
                             .items_center()
-                            .px(d.spacing.md)
-                            .border_b_1()
-                            .border_color(d.colors.border_primary)
+                            .px(d.spacing.lg)
                             .child(Self::panel_label(d, "SCAN_ACTIVITY")),
                     )
                     .child(
                         div()
-                            .p(d.spacing.md)
+                            .px(d.spacing.lg)
+                            .pb(d.spacing.lg)
                             .flex()
                             .flex_col()
                             .gap(d.spacing.sm)
@@ -1436,10 +1426,12 @@ impl ArtifactView {
                     .items_center()
                     .justify_center()
                     .gap(d.spacing.md)
+                    .bg(d.colors.bg_secondary)
+                    .rounded(d.radius.md)
                     .child(
                         div()
-                            .text_size(px(32.0))
-                            .font_weight(FontWeight::BOLD)
+                            .text_size(d.typography.size_title)
+                            .font_weight(FontWeight::SEMIBOLD)
                             .text_color(state_color)
                             .child(state_label),
                     )
@@ -1448,7 +1440,7 @@ impl ArtifactView {
                             .text_size(d.typography.size_sm)
                             .text_color(d.colors.text_tertiary)
                             .child(if current_path.is_empty() {
-                                "RUN A SCAN TO STREAM DIRECTORY ACTIVITY HERE".to_string()
+                                "Run a scan to stream directory activity here".to_string()
                             } else {
                                 truncate_path(&current_path, 72)
                             }),
@@ -1463,20 +1455,19 @@ impl ArtifactView {
             )
             .child(
                 div()
-                    .w(px(320.0))
+                    .w(px(340.0))
                     .flex_shrink_0()
                     .flex()
                     .flex_col()
-                    .border_l_1()
-                    .border_color(d.colors.border_primary)
+                    .bg(d.colors.bg_secondary)
+                    .rounded(d.radius.md)
+                    .overflow_hidden()
                     .child(
                         div()
-                            .h(px(36.0))
+                            .h(px(48.0))
                             .flex()
                             .items_center()
-                            .px(d.spacing.md)
-                            .border_b_1()
-                            .border_color(d.colors.border_primary)
+                            .px(d.spacing.lg)
                             .child(Self::panel_label(d, "RECENT_PATHS")),
                     )
                     .child(recent_log),
@@ -1516,23 +1507,23 @@ impl ArtifactView {
             .flex_row()
             .flex_1()
             .min_h_0()
+            .gap(d.spacing.md)
             // Left: scan breakdown
             .child(
                 div()
-                    .w(px(220.0))
+                    .w(px(260.0))
                     .flex_shrink_0()
                     .flex()
                     .flex_col()
-                    .border_r_1()
-                    .border_color(d.colors.border_primary)
+                    .bg(d.colors.bg_secondary)
+                    .rounded(d.radius.md)
+                    .overflow_hidden()
                     .child(
                         div()
-                            .h(px(36.0))
+                            .h(px(48.0))
                             .flex()
                             .items_center()
-                            .px(d.spacing.md)
-                            .border_b_1()
-                            .border_color(d.colors.border_primary)
+                            .px(d.spacing.lg)
                             .child(Self::panel_label(d, "BUILD_ARTIFACTS_FOUND")),
                     )
                     .child(
@@ -1540,7 +1531,8 @@ impl ArtifactView {
                             .flex()
                             .flex_col()
                             .gap(d.spacing.sm)
-                            .p(d.spacing.md)
+                            .px(d.spacing.lg)
+                            .pb(d.spacing.lg)
                             .child(Self::scan_stat_row(
                                 d,
                                 "ITEMS_FOUND",
@@ -1578,11 +1570,11 @@ impl ArtifactView {
                             .flex()
                             .flex_col()
                             .justify_end()
-                            .p(d.spacing.md)
+                            .p(d.spacing.lg)
                             .child(
                                 div()
-                                    .text_size(px(28.0))
-                                    .font_weight(FontWeight::BOLD)
+                                    .text_size(d.typography.size_xxl)
+                                    .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(d.colors.text_primary)
                                     .child(utils::format_size(size_found)),
                             )
@@ -1590,7 +1582,7 @@ impl ArtifactView {
                                 div()
                                     .text_size(d.typography.size_xs)
                                     .text_color(d.colors.text_tertiary)
-                                    .child("RECLAIMABLE_SO_FAR"),
+                                    .child("Reclaimable so far"),
                             ),
                     ),
             )
@@ -1603,8 +1595,9 @@ impl ArtifactView {
                     .items_center()
                     .justify_center()
                     .gap(d.spacing.md)
+                    .bg(d.colors.bg_secondary)
+                    .rounded(d.radius.md)
                     .child(Self::render_progress_gauge(d, dirs, items, &current_path))
-                    // Segmented progress bar
                     .child(
                         div()
                             .w(px(260.0))
@@ -1614,26 +1607,25 @@ impl ArtifactView {
                         div()
                             .text_size(d.typography.size_xs)
                             .text_color(d.colors.text_tertiary)
-                            .child("SCANNING_IN_PROGRESS"),
+                            .child("Scanning in progress"),
                     ),
             )
             // Right: artifact log
             .child(
                 div()
-                    .w(px(260.0))
+                    .w(px(280.0))
                     .flex_shrink_0()
                     .flex()
                     .flex_col()
-                    .border_l_1()
-                    .border_color(d.colors.border_primary)
+                    .bg(d.colors.bg_secondary)
+                    .rounded(d.radius.md)
+                    .overflow_hidden()
                     .child(
                         div()
-                            .h(px(36.0))
+                            .h(px(48.0))
                             .flex()
                             .items_center()
-                            .px(d.spacing.md)
-                            .border_b_1()
-                            .border_color(d.colors.border_primary)
+                            .px(d.spacing.lg)
                             .child(Self::panel_label(d, "ARTIFACT_LOG")),
                     )
                     .child(
@@ -1643,10 +1635,12 @@ impl ArtifactView {
                             .flex_col()
                             .flex_1()
                             .overflow_y_scroll()
-                            .p(d.spacing.sm)
-                            .gap(px(1.0))
+                            .px(d.spacing.lg)
+                            .pb(d.spacing.md)
+                            .gap(px(2.0))
                             .children(scan_log.iter().map(|path| {
                                 div()
+                                    .font_family("Menlo")
                                     .text_size(d.typography.size_xs)
                                     .text_color(d.colors.text_tertiary)
                                     .overflow_x_hidden()
@@ -1667,13 +1661,17 @@ impl ArtifactView {
             .flex()
             .flex_col()
             .items_center()
-            .gap(d.spacing.sm)
+            .gap(d.spacing.md)
             // Outer ring
             .child(
                 div()
-                    .w(px(140.0))
-                    .h(px(140.0))
+                    .w(px(180.0))
+                    .h(px(180.0))
                     .rounded_full()
+                    .bg(Hsla {
+                        a: 0.10,
+                        ..d.colors.accent_green
+                    })
                     .border_2()
                     .border_color(d.colors.accent_green)
                     .flex()
@@ -1684,11 +1682,11 @@ impl ArtifactView {
                             .flex()
                             .flex_col()
                             .items_center()
-                            .gap(px(2.0))
+                            .gap(px(4.0))
                             .child(
                                 div()
-                                    .text_size(px(36.0))
-                                    .font_weight(FontWeight::BOLD)
+                                    .text_size(d.typography.size_title)
+                                    .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(d.colors.text_primary)
                                     .child(format_number(dirs)),
                             )
@@ -1696,15 +1694,16 @@ impl ArtifactView {
                                 div()
                                     .text_size(d.typography.size_xs)
                                     .text_color(d.colors.text_tertiary)
-                                    .child("DIRS_SCANNED"),
+                                    .child("Dirs scanned"),
                             ),
                     ),
             )
             .child(
                 div()
-                    .text_size(d.typography.size_sm)
+                    .text_size(d.typography.size_md)
                     .text_color(d.colors.accent_green)
-                    .child(format!("{} FOUND", items)),
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(format!("{} found", items)),
             )
     }
 
@@ -1717,13 +1716,13 @@ impl ArtifactView {
                 div()
                     .text_size(d.typography.size_xs)
                     .text_color(d.colors.text_tertiary)
-                    .child(label),
+                    .child(prettify_label(label)),
             )
             .child(
                 div()
                     .text_size(d.typography.size_sm)
                     .text_color(vc)
-                    .font_weight(FontWeight::BOLD)
+                    .font_weight(FontWeight::SEMIBOLD)
                     .child(value.to_string()),
             )
     }
@@ -1750,7 +1749,9 @@ impl ArtifactView {
             .flex_1()
             .min_h_0()
             .overflow_y_scroll()
-            .bg(d.colors.bg_primary);
+            .px(d.spacing.md)
+            .pb(d.spacing.md)
+            .gap(px(2.0));
 
         if entries.is_empty() {
             list = list.child(
@@ -1758,7 +1759,7 @@ impl ArtifactView {
                     .p(d.spacing.md)
                     .text_size(d.typography.size_sm)
                     .text_color(d.colors.text_tertiary)
-                    .child("NO_SUBDIRECTORIES"),
+                    .child("No subdirectories"),
             );
         } else {
             for (name, path) in entries {
@@ -1775,9 +1776,8 @@ impl ArtifactView {
                     div()
                         .id(ElementId::Name(format!("browse-{}", path.display()).into()))
                         .px(d.spacing.md)
-                        .py(px(5.0))
-                        .border_b_1()
-                        .border_color(d.colors.border_secondary)
+                        .py(px(8.0))
+                        .rounded(d.radius.sm)
                         .cursor_pointer()
                         .hover(|s| s.bg(d.colors.interactive_hover))
                         .on_click(move |_, _, cx| {
@@ -1785,6 +1785,7 @@ impl ArtifactView {
                         })
                         .child(
                             div()
+                                .font_family("Menlo")
                                 .text_size(d.typography.size_sm)
                                 .text_color(if is_parent {
                                     d.colors.text_tertiary
@@ -1809,13 +1810,12 @@ impl ArtifactView {
                     .flex()
                     .items_center()
                     .justify_between()
-                    .px(d.spacing.md)
-                    .h(px(36.0))
-                    .border_b_1()
-                    .border_color(d.colors.border_primary)
+                    .px(d.spacing.lg)
+                    .h(px(48.0))
                     .child(Self::panel_label(d, "SELECT_DIRECTORY"))
                     .child(
                         div()
+                            .font_family("Menlo")
                             .text_size(d.typography.size_xs)
                             .text_color(d.colors.text_tertiary)
                             .child(truncate_path(browse_path, 40)),
@@ -1829,9 +1829,7 @@ impl ArtifactView {
                     .flex()
                     .items_center()
                     .justify_between()
-                    .p(d.spacing.md)
-                    .border_t_1()
-                    .border_color(d.colors.border_primary)
+                    .p(d.spacing.lg)
                     .child(
                         Button::new("Cancel", d)
                             .variant(ButtonVariant::Ghost)
@@ -1855,11 +1853,21 @@ impl ArtifactView {
 
 impl ArtifactView {
     fn panel_label(d: DesignSystem, text: &'static str) -> Div {
+        let pretty = prettify_label(text);
         div()
             .text_size(d.typography.size_xs)
             .text_color(d.colors.text_tertiary)
-            .font_weight(FontWeight::BOLD)
-            .child(text)
+            .font_weight(FontWeight::MEDIUM)
+            .child(pretty)
+    }
+}
+
+fn prettify_label(text: &str) -> String {
+    let lower = text.to_lowercase().replace('_', " ");
+    let mut chars = lower.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => String::new(),
     }
 }
 

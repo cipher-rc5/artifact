@@ -1,21 +1,47 @@
 // file: src/directory_item.rs
-// description: Directory item types representing scannable directories
+// description: Directory item types representing detected build artifacts.
 
 use std::path::PathBuf;
 use std::time::SystemTime;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DirectoryType {
-    NodeModules,
-    RustTarget,
+use crate::rules::{self, ArtifactRule};
+
+/// The detected kind of a build artifact directory. Wraps a static reference
+/// to the rule that matched, so callers get the rule's display name, language,
+/// markers, and color hint without copying.
+#[derive(Debug, Clone, Copy)]
+pub struct DirectoryType {
+    pub rule: &'static ArtifactRule,
 }
+
+impl DirectoryType {
+    pub fn new(rule: &'static ArtifactRule) -> Self {
+        Self { rule }
+    }
+
+    /// Resolve a stable rule name (as stored in the database) back into a kind.
+    /// Returns None if the rule is unknown — e.g. a record from an older build.
+    pub fn from_name(name: &str) -> Option<Self> {
+        rules::find(name).map(Self::new)
+    }
+
+    /// Stable identifier — used as the database key for this kind.
+    pub fn name(&self) -> &'static str {
+        self.rule.name
+    }
+}
+
+impl PartialEq for DirectoryType {
+    fn eq(&self, other: &Self) -> bool {
+        self.rule.name == other.rule.name
+    }
+}
+
+impl Eq for DirectoryType {}
 
 impl std::fmt::Display for DirectoryType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            DirectoryType::NodeModules => write!(f, "node_modules"),
-            DirectoryType::RustTarget => write!(f, "target"),
-        }
+        f.write_str(self.rule.dir_name)
     }
 }
 

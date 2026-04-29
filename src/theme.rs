@@ -36,33 +36,38 @@ impl Default for BentoTheme {
 
 impl BentoTheme {
     pub fn dark() -> Self {
-        // gpui's hsla() takes h in 0–1, NOT 0–360 degrees. Divide degrees by 360.
-        let green = hsla(138.0 / 360.0, 1.0, 0.52, 1.0);
+        // gpui's hsla() takes h in 0–1, NOT 0–360.
+        let green = hsla(150.0 / 360.0, 0.62, 0.58, 1.0);
+        let orange = hsla(28.0 / 360.0, 0.85, 0.62, 1.0);
+        let red = hsla(2.0 / 360.0, 0.78, 0.62, 1.0);
+        let blue = hsla(212.0 / 360.0, 0.72, 0.65, 1.0);
         Self {
-            bg_primary: hsla(0.0, 0.0, 0.03, 1.0),       // #080808
-            bg_secondary: hsla(0.0, 0.0, 0.07, 1.0),     // #121212 — panels, sidebar
-            bg_tertiary: hsla(0.0, 0.0, 0.12, 1.0),      // #1F1F1F — hover
-            bg_elevated: hsla(0.0, 0.0, 0.09, 1.0),      // #171717
-            border_primary: hsla(0.0, 0.0, 0.18, 1.0),   // #2E2E2E — visible hairlines
-            border_secondary: hsla(0.0, 0.0, 0.11, 1.0), // #1C1C1C — subtle dividers
+            // Calmer, slightly cool-tinted dark surfaces; more separation between
+            // the canvas (bg_primary) and the floating cards (bg_secondary).
+            bg_primary: hsla(220.0 / 360.0, 0.06, 0.055, 1.0), // canvas
+            bg_secondary: hsla(220.0 / 360.0, 0.05, 0.10, 1.0), // card surface
+            bg_tertiary: hsla(220.0 / 360.0, 0.05, 0.14, 1.0), // hover / nested
+            bg_elevated: hsla(220.0 / 360.0, 0.05, 0.12, 1.0), // popovers
+            border_primary: hsla(220.0 / 360.0, 0.05, 0.16, 1.0),
+            border_secondary: hsla(220.0 / 360.0, 0.04, 0.12, 1.0),
             border_focus: green,
-            text_primary: hsla(0.0, 0.0, 0.84, 1.0), // #D6D6D6
-            text_secondary: hsla(0.0, 0.0, 0.55, 1.0), // #8C8C8C
-            text_tertiary: hsla(0.0, 0.0, 0.40, 1.0), // #666666
+            text_primary: hsla(220.0 / 360.0, 0.05, 0.94, 1.0),
+            text_secondary: hsla(220.0 / 360.0, 0.04, 0.66, 1.0),
+            text_tertiary: hsla(220.0 / 360.0, 0.04, 0.46, 1.0),
             text_inverse: hsla(0.0, 0.0, 0.05, 1.0),
             accent_green: green,
-            accent_orange: hsla(28.0 / 360.0, 1.0, 0.55, 1.0),
-            accent_red: hsla(2.0 / 360.0, 0.9, 0.52, 1.0),
-            accent_blue: hsla(195.0 / 360.0, 1.0, 0.52, 1.0),
-            accent_yellow: hsla(50.0 / 360.0, 1.0, 0.55, 1.0),
-            accent_purple: hsla(270.0 / 360.0, 0.8, 0.60, 1.0),
+            accent_orange: orange,
+            accent_red: red,
+            accent_blue: blue,
+            accent_yellow: hsla(48.0 / 360.0, 0.85, 0.65, 1.0),
+            accent_purple: hsla(268.0 / 360.0, 0.55, 0.70, 1.0),
             status_success: green,
-            status_warning: hsla(28.0 / 360.0, 1.0, 0.55, 1.0),
-            status_error: hsla(2.0 / 360.0, 0.9, 0.52, 1.0),
-            status_info: hsla(195.0 / 360.0, 1.0, 0.52, 1.0),
-            interactive_hover: hsla(0.0, 0.0, 0.11, 1.0),
-            interactive_active: hsla(0.0, 0.0, 0.16, 1.0),
-            interactive_disabled: hsla(0.0, 0.0, 0.18, 1.0),
+            status_warning: orange,
+            status_error: red,
+            status_info: blue,
+            interactive_hover: hsla(220.0 / 360.0, 0.05, 0.16, 1.0),
+            interactive_active: hsla(220.0 / 360.0, 0.05, 0.20, 1.0),
+            interactive_disabled: hsla(220.0 / 360.0, 0.04, 0.18, 1.0),
         }
     }
 }
@@ -70,43 +75,35 @@ impl BentoTheme {
 pub struct Gradients;
 
 impl Gradients {
-    pub fn blue_purple(_theme: &BentoTheme) -> Background {
+    pub fn green_card(_theme: &BentoTheme) -> Background {
         linear_gradient(
-            180.0,
-            linear_color_stop(hsla(138.0 / 360.0, 0.5, 0.10, 1.0), 0.0),
-            linear_color_stop(hsla(138.0 / 360.0, 0.4, 0.08, 1.0), 1.0),
+            155.0,
+            linear_color_stop(hsla(150.0 / 360.0, 0.45, 0.16, 1.0), 0.0),
+            linear_color_stop(hsla(168.0 / 360.0, 0.40, 0.10, 1.0), 1.0),
         )
     }
 
-    pub fn red_orange(_theme: &BentoTheme) -> Background {
+    pub fn warm_card(_theme: &BentoTheme) -> Background {
         linear_gradient(
-            180.0,
-            linear_color_stop(hsla(2.0 / 360.0, 0.4, 0.12, 1.0), 0.0),
-            linear_color_stop(hsla(2.0 / 360.0, 0.3, 0.10, 1.0), 1.0),
+            155.0,
+            linear_color_stop(hsla(18.0 / 360.0, 0.45, 0.16, 1.0), 0.0),
+            linear_color_stop(hsla(2.0 / 360.0, 0.40, 0.11, 1.0), 1.0),
         )
     }
 
-    pub fn green_teal(_theme: &BentoTheme) -> Background {
+    pub fn cool_card(_theme: &BentoTheme) -> Background {
         linear_gradient(
-            180.0,
-            linear_color_stop(hsla(138.0 / 360.0, 0.5, 0.10, 1.0), 0.0),
-            linear_color_stop(hsla(138.0 / 360.0, 0.4, 0.08, 1.0), 1.0),
+            155.0,
+            linear_color_stop(hsla(218.0 / 360.0, 0.40, 0.16, 1.0), 0.0),
+            linear_color_stop(hsla(232.0 / 360.0, 0.38, 0.10, 1.0), 1.0),
         )
     }
 
     pub fn surface(theme: &BentoTheme) -> Background {
         linear_gradient(
-            180.0,
+            165.0,
             linear_color_stop(theme.bg_secondary, 0.0),
             linear_color_stop(theme.bg_elevated, 1.0),
-        )
-    }
-
-    pub fn header() -> Background {
-        linear_gradient(
-            90.0,
-            linear_color_stop(hsla(138.0 / 360.0, 1.0, 0.52, 1.0), 0.0),
-            linear_color_stop(hsla(165.0 / 360.0, 0.9, 0.42, 1.0), 1.0),
         )
     }
 }
@@ -124,12 +121,12 @@ pub struct Spacing {
 impl Default for Spacing {
     fn default() -> Self {
         Self {
-            xs: px(4.0),
-            sm: px(8.0),
-            md: px(14.0),
-            lg: px(20.0),
-            xl: px(28.0),
-            xxl: px(40.0),
+            xs: px(6.0),
+            sm: px(10.0),
+            md: px(16.0),
+            lg: px(24.0),
+            xl: px(36.0),
+            xxl: px(56.0),
         }
     }
 }
@@ -148,13 +145,13 @@ pub struct Typography {
 impl Default for Typography {
     fn default() -> Self {
         Self {
-            size_xs: px(10.0),
-            size_sm: px(11.0),
-            size_md: px(12.0),
-            size_lg: px(13.0),
-            size_xl: px(20.0),
-            size_xxl: px(24.0),
-            size_title: px(22.0),
+            size_xs: px(11.0),
+            size_sm: px(12.0),
+            size_md: px(13.0),
+            size_lg: px(15.0),
+            size_xl: px(22.0),
+            size_xxl: px(30.0),
+            size_title: px(40.0),
         }
     }
 }
@@ -170,10 +167,10 @@ pub struct BorderRadius {
 impl Default for BorderRadius {
     fn default() -> Self {
         Self {
-            xs: px(1.0),
-            sm: px(2.0),
-            md: px(3.0),
-            lg: px(4.0),
+            xs: px(6.0),
+            sm: px(10.0),
+            md: px(14.0),
+            lg: px(20.0),
         }
     }
 }

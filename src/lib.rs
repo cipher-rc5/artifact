@@ -8,6 +8,7 @@ pub mod database;
 pub mod directory_item;
 pub mod error;
 pub mod logging;
+pub mod rules;
 pub mod scanner;
 pub mod theme;
 pub mod utils;
