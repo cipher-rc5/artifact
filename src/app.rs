@@ -370,6 +370,7 @@ impl ArtifactApp {
         }
     }
 
+    #[allow(dead_code)]
     pub fn select_all(&mut self, cx: &mut Context<Self>) {
         let show_orphaned_only = self.show_orphaned_only;
 
@@ -387,6 +388,7 @@ impl ArtifactApp {
         cx.notify();
     }
 
+    #[allow(dead_code)]
     pub fn select_none(&mut self, cx: &mut Context<Self>) {
         for dir in &mut self.directories {
             dir.selected = false;

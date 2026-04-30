@@ -36,38 +36,35 @@ impl Default for BentoTheme {
 
 impl BentoTheme {
     pub fn dark() -> Self {
-        // gpui's hsla() takes h in 0–1, NOT 0–360.
-        let green = hsla(150.0 / 360.0, 0.62, 0.58, 1.0);
-        let orange = hsla(28.0 / 360.0, 0.85, 0.62, 1.0);
-        let red = hsla(2.0 / 360.0, 0.78, 0.62, 1.0);
-        let blue = hsla(212.0 / 360.0, 0.72, 0.65, 1.0);
+        let green = hsla(145.0 / 360.0, 0.80, 0.56, 1.0);
+        let orange = hsla(42.0 / 360.0, 0.92, 0.58, 1.0);
+        let red = hsla(0.0, 0.80, 0.60, 1.0);
+        let blue = hsla(207.0 / 360.0, 0.70, 0.62, 1.0);
         Self {
-            // Calmer, slightly cool-tinted dark surfaces; more separation between
-            // the canvas (bg_primary) and the floating cards (bg_secondary).
-            bg_primary: hsla(220.0 / 360.0, 0.06, 0.055, 1.0), // canvas
-            bg_secondary: hsla(220.0 / 360.0, 0.05, 0.10, 1.0), // card surface
-            bg_tertiary: hsla(220.0 / 360.0, 0.05, 0.14, 1.0), // hover / nested
-            bg_elevated: hsla(220.0 / 360.0, 0.05, 0.12, 1.0), // popovers
-            border_primary: hsla(220.0 / 360.0, 0.05, 0.16, 1.0),
-            border_secondary: hsla(220.0 / 360.0, 0.04, 0.12, 1.0),
+            bg_primary: hsla(220.0 / 360.0, 0.10, 0.02, 1.0),
+            bg_secondary: hsla(220.0 / 360.0, 0.08, 0.055, 1.0),
+            bg_tertiary: hsla(220.0 / 360.0, 0.08, 0.09, 1.0),
+            bg_elevated: hsla(220.0 / 360.0, 0.08, 0.075, 1.0),
+            border_primary: hsla(220.0 / 360.0, 0.05, 0.22, 1.0),
+            border_secondary: hsla(220.0 / 360.0, 0.04, 0.14, 1.0),
             border_focus: green,
-            text_primary: hsla(220.0 / 360.0, 0.05, 0.94, 1.0),
-            text_secondary: hsla(220.0 / 360.0, 0.04, 0.66, 1.0),
-            text_tertiary: hsla(220.0 / 360.0, 0.04, 0.46, 1.0),
-            text_inverse: hsla(0.0, 0.0, 0.05, 1.0),
+            text_primary: hsla(220.0 / 360.0, 0.06, 0.96, 1.0),
+            text_secondary: hsla(220.0 / 360.0, 0.04, 0.72, 1.0),
+            text_tertiary: hsla(220.0 / 360.0, 0.03, 0.46, 1.0),
+            text_inverse: hsla(220.0 / 360.0, 0.08, 0.04, 1.0),
             accent_green: green,
             accent_orange: orange,
             accent_red: red,
             accent_blue: blue,
-            accent_yellow: hsla(48.0 / 360.0, 0.85, 0.65, 1.0),
-            accent_purple: hsla(268.0 / 360.0, 0.55, 0.70, 1.0),
+            accent_yellow: hsla(50.0 / 360.0, 0.90, 0.56, 1.0),
+            accent_purple: hsla(272.0 / 360.0, 0.62, 0.66, 1.0),
             status_success: green,
             status_warning: orange,
             status_error: red,
             status_info: blue,
-            interactive_hover: hsla(220.0 / 360.0, 0.05, 0.16, 1.0),
-            interactive_active: hsla(220.0 / 360.0, 0.05, 0.20, 1.0),
-            interactive_disabled: hsla(220.0 / 360.0, 0.04, 0.18, 1.0),
+            interactive_hover: hsla(220.0 / 360.0, 0.05, 0.12, 1.0),
+            interactive_active: hsla(220.0 / 360.0, 0.05, 0.16, 1.0),
+            interactive_disabled: hsla(220.0 / 360.0, 0.03, 0.10, 1.0),
         }
     }
 }
@@ -121,12 +118,12 @@ pub struct Spacing {
 impl Default for Spacing {
     fn default() -> Self {
         Self {
-            xs: px(6.0),
-            sm: px(10.0),
-            md: px(16.0),
-            lg: px(24.0),
-            xl: px(36.0),
-            xxl: px(56.0),
+            xs: px(4.0),
+            sm: px(8.0),
+            md: px(12.0),
+            lg: px(18.0),
+            xl: px(28.0),
+            xxl: px(44.0),
         }
     }
 }
@@ -145,13 +142,13 @@ pub struct Typography {
 impl Default for Typography {
     fn default() -> Self {
         Self {
-            size_xs: px(11.0),
+            size_xs: px(10.0),
             size_sm: px(12.0),
             size_md: px(13.0),
-            size_lg: px(15.0),
+            size_lg: px(16.0),
             size_xl: px(22.0),
-            size_xxl: px(30.0),
-            size_title: px(40.0),
+            size_xxl: px(28.0),
+            size_title: px(42.0),
         }
     }
 }
@@ -167,10 +164,10 @@ pub struct BorderRadius {
 impl Default for BorderRadius {
     fn default() -> Self {
         Self {
-            xs: px(6.0),
-            sm: px(10.0),
-            md: px(14.0),
-            lg: px(20.0),
+            xs: px(4.0),
+            sm: px(8.0),
+            md: px(10.0),
+            lg: px(16.0),
         }
     }
 }

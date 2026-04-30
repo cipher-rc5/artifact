@@ -128,7 +128,10 @@ impl Scanner {
             let mut guard = matches.lock().unwrap();
             std::mem::take(&mut *guard)
         };
-        info!("Discovered {} candidate directories; sizing", raw_matches.len());
+        info!(
+            "Discovered {} candidate directories; sizing",
+            raw_matches.len()
+        );
 
         let mut results: Vec<DirectoryItem> = Vec::with_capacity(raw_matches.len());
         let final_dirs = dirs_scanned.load(Ordering::Relaxed);
@@ -209,10 +212,7 @@ impl Scanner {
                             return None;
                         }
                         if rule.markers.is_empty()
-                            || rule
-                                .markers
-                                .iter()
-                                .any(|m| has_marker(parent_path, m))
+                            || rule.markers.iter().any(|m| has_marker(parent_path, m))
                         {
                             Some(*rule)
                         } else {
@@ -252,7 +252,9 @@ fn has_marker(parent: &Path, marker: &str) -> bool {
 
 fn build_item(path: PathBuf, rule: &'static ArtifactRule) -> Option<DirectoryItem> {
     let size = parallel_dir_size(&path);
-    let last_modified = std::fs::metadata(&path).ok().and_then(|m| m.modified().ok());
+    let last_modified = std::fs::metadata(&path)
+        .ok()
+        .and_then(|m| m.modified().ok());
 
     let project_root = path.parent().map(|p| p.to_path_buf());
     let project_name = path
