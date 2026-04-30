@@ -32,6 +32,11 @@ fmt:
 clippy:
     cargo clippy --all-targets -- -D warnings
 
+# Audit dependencies for vulnerabilities.
+# RUSTSEC-2025-0134 (rustls-pemfile unmaintained) is ignored — see audit.toml for rationale.
+audit:
+    cargo audit --ignore RUSTSEC-2025-0134
+
 # --- Distribution builds (cargo-zigbuild) --------------------------------
 
 # Install all release targets and required tooling.
