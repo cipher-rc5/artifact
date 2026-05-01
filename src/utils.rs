@@ -1,14 +1,21 @@
 // file: src/utils.rs
 // description: Utility functions for ARTIFACT
 
+use crate::config::DeleteMode;
+use anyhow::Context as _;
 use std::path::{Path, PathBuf};
 
 pub fn get_home_dir() -> Option<PathBuf> {
     dirs::home_dir()
 }
 
-pub fn delete_directory(path: &Path) -> std::io::Result<()> {
-    std::fs::remove_dir_all(path)
+pub fn remove_directory(path: &Path, mode: DeleteMode) -> anyhow::Result<()> {
+    match mode {
+        DeleteMode::Trash => trash::delete(path).context("failed to move directory to trash"),
+        DeleteMode::Permanent => {
+            std::fs::remove_dir_all(path).context("failed to permanently delete directory")
+        }
+    }
 }
 
 pub fn format_size(bytes: u64) -> String {

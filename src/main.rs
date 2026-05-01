@@ -2,6 +2,8 @@
 // description: GPUI application entry point with bento box UI
 // reference: https://github.com/zed-industries/zed
 
+#![allow(unexpected_cfgs)]
+
 mod app;
 mod view;
 
@@ -10,6 +12,31 @@ use artifact::{AppConfig, LoggingConfig};
 use gpui::*;
 use tracing::info;
 use view::ArtifactView;
+
+#[cfg(target_os = "macos")]
+fn set_dock_icon() {
+    use cocoa::appkit::NSApp;
+    use cocoa::base::{id, nil};
+    use cocoa::foundation::NSData;
+    use objc::{class, msg_send, sel, sel_impl};
+
+    const APP_ICON: &[u8] = include_bytes!("../assets/app-icon.png");
+
+    unsafe {
+        let data =
+            NSData::dataWithBytes_length_(nil, APP_ICON.as_ptr().cast(), APP_ICON.len() as u64);
+        let image: id = msg_send![class!(NSImage), alloc];
+        let image: id = msg_send![image, initWithData:data];
+
+        if image != nil {
+            let app = NSApp();
+            let _: () = msg_send![app, setApplicationIconImage:image];
+        }
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn set_dock_icon() {}
 
 fn main() -> anyhow::Result<()> {
     let config = AppConfig::load().unwrap_or_else(|e| {
@@ -43,6 +70,15 @@ fn main() -> anyhow::Result<()> {
     let window_height = config.ui.window_height;
 
     Application::new().run(move |cx: &mut App| {
+        set_dock_icon();
+
+        cx.on_window_closed(|cx| {
+            if cx.windows().is_empty() {
+                cx.quit();
+            }
+        })
+        .detach();
+
         let app_model = ArtifactApp::new(config.clone(), cx);
 
         cx.open_window(
@@ -58,6 +94,8 @@ fn main() -> anyhow::Result<()> {
                     title: Some("ARTIFACT".into()),
                     ..Default::default()
                 }),
+                app_id: Some("com.cipher.artifact".to_string()),
+                window_min_size: Some(size(px(880.0), px(640.0))),
                 ..Default::default()
             },
             move |window, cx| cx.new(|cx| ArtifactView::new(app_model.clone(), window, cx)),

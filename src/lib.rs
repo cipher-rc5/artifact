@@ -14,7 +14,7 @@ pub mod theme;
 pub mod utils;
 
 // Re-exports for convenience
-pub use config::AppConfig;
+pub use config::{AppConfig, DeleteMode};
 pub use database::{DeletionDatabase, DeletionRecord, DeletionStatistics};
 pub use directory_item::{DirectoryItem, DirectoryType};
 pub use error::{ArtifactError, Result};

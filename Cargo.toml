@@ -33,6 +33,7 @@ rkyv = "0.8.16" # Zero-copy (de)serialization for redb-stored records.
 serde = { version = "1.0.228", features = ["derive"] } # Config + JSON model derives.
 serde_json = "1.0.149" # JSON for config import/export and IPC payloads.
 toml = "1.1.2" # TOML parsing for the user config file.
+trash = "5" # Safe cross-platform move-to-trash support for cleanup actions.
 
 # Time / formatting
 chrono = "0.4.44" # Timestamps on scan records and log lines.
@@ -50,3 +51,7 @@ lto = "thin" # Cross-crate inlining; meaningful size + speed win.
 codegen-units = 1 # Maximize optimization at the cost of build time.
 strip = "symbols" # Drop debug symbols from the binary.
 panic = "abort" # No unwinding tables — smaller binary; we don't catch_unwind.
+
+[target.'cfg(target_os = "macos")'.dependencies]
+cocoa = "0.25" # Native app icon hook for the macOS dock.
+objc = "0.2" # Objective-C runtime bridge used by the dock icon setup.

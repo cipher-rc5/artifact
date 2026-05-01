@@ -9,10 +9,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, channel};
 use std::thread;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tracing::{debug, error, info, warn};
 
-use artifact::config::AppConfig;
+use artifact::config::{AppConfig, DeleteMode};
 use artifact::database::{DeletionDatabase, DeletionRecord};
 use artifact::directory_item::DirectoryItem;
 use artifact::rules;
@@ -45,6 +45,19 @@ pub struct BrowseEntry {
     pub path: PathBuf,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NoticeKind {
+    Success,
+    Error,
+}
+
+#[derive(Debug, Clone)]
+pub struct StatusNotice {
+    pub kind: NoticeKind,
+    pub title: String,
+    pub message: String,
+}
+
 // ---------------------------------------------------------------------------
 // Internal messages
 // ---------------------------------------------------------------------------
@@ -60,6 +73,8 @@ enum ScanMessage {
 // ---------------------------------------------------------------------------
 
 pub struct ArtifactApp {
+    config: AppConfig,
+
     // Scan state
     scan_path: String,
     enabled_rules: HashSet<String>,
@@ -78,6 +93,8 @@ pub struct ArtifactApp {
     // Results
     deleted_count: usize,
     error_message: Option<String>,
+    notice: Option<StatusNotice>,
+    notice_set_at: Option<Instant>,
 
     // Database
     database: Option<Arc<DeletionDatabase>>,
@@ -108,9 +125,6 @@ impl ArtifactApp {
     pub fn is_rule_enabled(&self, name: &str) -> bool {
         self.enabled_rules.contains(name)
     }
-    pub fn enabled_rule_count(&self) -> usize {
-        self.enabled_rules.len()
-    }
     pub fn total_size(&self) -> u64 {
         self.total_size
     }
@@ -123,6 +137,9 @@ impl ArtifactApp {
     pub fn error_message(&self) -> Option<&str> {
         self.error_message.as_deref()
     }
+    pub fn notice(&self) -> Option<&StatusNotice> {
+        self.notice.as_ref()
+    }
     pub fn show_orphaned_only(&self) -> bool {
         self.show_orphaned_only
     }
@@ -134,6 +151,40 @@ impl ArtifactApp {
     }
     pub fn browse_entries(&self) -> &[BrowseEntry] {
         &self.browse_entries
+    }
+    pub fn delete_mode(&self) -> DeleteMode {
+        self.config.scan.delete_mode
+    }
+}
+
+const NOTICE_TTL: Duration = Duration::from_secs(8);
+
+impl ArtifactApp {
+    fn set_notice(&mut self, kind: NoticeKind, title: impl Into<String>, message: impl Into<String>) {
+        self.notice = Some(StatusNotice {
+            kind,
+            title: title.into(),
+            message: message.into(),
+        });
+        self.notice_set_at = Some(Instant::now());
+    }
+
+    pub fn dismiss_notice(&mut self, cx: &mut Context<Self>) {
+        if self.notice.is_some() {
+            self.notice = None;
+            self.notice_set_at = None;
+            cx.notify();
+        }
+    }
+
+    pub fn expire_notice_if_stale(&mut self, cx: &mut Context<Self>) {
+        if let Some(set_at) = self.notice_set_at {
+            if set_at.elapsed() >= NOTICE_TTL {
+                self.notice = None;
+                self.notice_set_at = None;
+                cx.notify();
+            }
+        }
     }
 }
 
@@ -164,10 +215,10 @@ impl ArtifactApp {
 
         let home_path = PathBuf::from(&home);
 
-        let enabled_rules: HashSet<String> =
-            rules::RULES.iter().map(|r| r.name.to_string()).collect();
+        let enabled_rules = enabled_rules_from_config(&config);
 
         cx.new(|_cx| Self {
+            config,
             scan_path: home.clone(),
             enabled_rules,
             scan_state: ScanState::Idle,
@@ -179,6 +230,8 @@ impl ArtifactApp {
             show_orphaned_only: false,
             deleted_count: 0,
             error_message: None,
+            notice: None,
+            notice_set_at: None,
             database,
             show_file_browser: false,
             browse_path: home_path,
@@ -189,17 +242,31 @@ impl ArtifactApp {
 
     // -- Scan option toggles ------------------------------------------------
 
-    pub fn toggle_rule(&mut self, name: &str, cx: &mut Context<Self>) {
-        if self.enabled_rules.contains(name) {
-            self.enabled_rules.remove(name);
-        } else {
-            self.enabled_rules.insert(name.to_string());
-        }
+    pub fn toggle_orphaned_only(&mut self, cx: &mut Context<Self>) {
+        self.show_orphaned_only = !self.show_orphaned_only;
         cx.notify();
     }
 
-    pub fn toggle_orphaned_only(&mut self, cx: &mut Context<Self>) {
-        self.show_orphaned_only = !self.show_orphaned_only;
+    pub fn set_language_enabled(&mut self, language: &str, enabled: bool, cx: &mut Context<Self>) {
+        for rule in rules::RULES.iter().filter(|rule| rule.language == language) {
+            if enabled {
+                self.enabled_rules.insert(rule.name.to_string());
+            } else {
+                self.enabled_rules.remove(rule.name);
+            }
+        }
+
+        self.persist_settings(cx);
+        cx.notify();
+    }
+
+    pub fn set_delete_mode(&mut self, delete_mode: DeleteMode, cx: &mut Context<Self>) {
+        if self.config.scan.delete_mode == delete_mode {
+            return;
+        }
+
+        self.config.scan.delete_mode = delete_mode;
+        self.persist_settings(cx);
         cx.notify();
     }
 
@@ -213,6 +280,8 @@ impl ArtifactApp {
         self.total_size = 0;
         self.selected_size = 0;
         self.error_message = None;
+        self.notice = None;
+        self.notice_set_at = None;
         self.scan_progress_data = None;
         self.scan_log.clear();
 
@@ -283,10 +352,24 @@ impl ArtifactApp {
                     self.scan_state = ScanState::Complete;
                     self.scan_progress_data = None;
                     self.scan_receiver = None;
+                    self.set_notice(
+                        NoticeKind::Success,
+                        "SCAN COMPLETE",
+                        format!(
+                            "Found {} artifacts totaling {}.",
+                            format_number(self.directories.len()),
+                            utils::format_size(self.total_size)
+                        ),
+                    );
                     cx.notify();
                 }
                 ScanMessage::Error(err) => {
                     self.error_message = Some(err);
+                    self.set_notice(
+                        NoticeKind::Error,
+                        "SCAN FAILED",
+                        self.error_message.clone().unwrap_or_default(),
+                    );
                     self.scan_state = ScanState::Idle;
                     self.scan_progress_data = None;
                     self.scan_receiver = None;
@@ -312,11 +395,12 @@ impl ArtifactApp {
 
         let mut success_count = 0;
         let mut errors = Vec::new();
+        let delete_mode = self.config.scan.delete_mode;
 
         for item in to_delete {
             debug!("Deleting directory: {}", item.path.display());
 
-            match utils::delete_directory(&item.path) {
+            match utils::remove_directory(&item.path, delete_mode) {
                 Ok(_) => {
                     info!("Successfully deleted: {}", item.path.display());
                     success_count += 1;
@@ -355,8 +439,27 @@ impl ArtifactApp {
         if !errors.is_empty() {
             warn!("Deletion completed with {} errors", errors.len());
             self.error_message = Some(format!("Failed to delete {} directories", errors.len()));
+            self.set_notice(
+                NoticeKind::Error,
+                "CLEANUP INCOMPLETE",
+                self.error_message.clone().unwrap_or_default(),
+            );
         } else {
             info!("All deletions completed successfully");
+            self.error_message = None;
+            let action_label = match delete_mode {
+                DeleteMode::Trash => "Moved selected artifacts to Trash.",
+                DeleteMode::Permanent => "Permanently deleted selected artifacts.",
+            };
+            self.set_notice(
+                NoticeKind::Success,
+                "CLEANUP COMPLETE",
+                format!(
+                    "{} {} items processed.",
+                    action_label,
+                    format_number(success_count)
+                ),
+            );
         }
 
         cx.notify();
@@ -464,4 +567,76 @@ impl ArtifactApp {
             }
         }
     }
+
+    fn persist_settings(&mut self, cx: &mut Context<Self>) {
+        self.config.scan.enabled_languages = Some(enabled_language_labels(&self.enabled_rules));
+
+        match self.config.save() {
+            Ok(()) => {
+                self.error_message = None;
+                self.set_notice(
+                    NoticeKind::Success,
+                    "SETTINGS SAVED",
+                    "Scan preferences were updated for future runs.",
+                );
+            }
+            Err(err) => {
+                self.set_notice(NoticeKind::Error, "SETTINGS NOT SAVED", err.to_string());
+                self.error_message = Some("Failed to save settings".to_string());
+            }
+        }
+
+        cx.notify();
+    }
+}
+
+fn enabled_rules_from_config(config: &AppConfig) -> HashSet<String> {
+    let Some(enabled_languages) = config.scan.enabled_languages.as_ref() else {
+        return rules::RULES
+            .iter()
+            .map(|rule| rule.name.to_string())
+            .collect();
+    };
+
+    rules::RULES
+        .iter()
+        .filter(|rule| {
+            enabled_languages
+                .iter()
+                .any(|language| language == rule.language)
+        })
+        .map(|rule| rule.name.to_string())
+        .collect()
+}
+
+fn enabled_language_labels(enabled_rules: &HashSet<String>) -> Vec<String> {
+    let mut languages = Vec::new();
+
+    for rule in rules::RULES {
+        if enabled_rules.contains(rule.name)
+            && !languages
+                .iter()
+                .any(|language: &String| language == rule.language)
+        {
+            languages.push(rule.language.to_string());
+        }
+    }
+
+    languages
+}
+
+fn format_number(n: usize) -> String {
+    if n < 1_000 {
+        return n.to_string();
+    }
+
+    let s = n.to_string();
+    let mut result = String::new();
+    for (i, c) in s.chars().rev().enumerate() {
+        if i > 0 && i % 3 == 0 {
+            result.push(',');
+        }
+        result.push(c);
+    }
+    result.chars().rev().collect()
 }

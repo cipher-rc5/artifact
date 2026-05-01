@@ -72,6 +72,105 @@ impl BentoTheme {
 pub struct Gradients;
 
 impl Gradients {
+    pub fn panel_surface(_theme: &BentoTheme) -> Background {
+        linear_gradient(
+            155.0,
+            linear_color_stop(hsla(220.0 / 360.0, 0.10, 0.075, 1.0), 0.0),
+            linear_color_stop(hsla(220.0 / 360.0, 0.12, 0.035, 1.0), 1.0),
+        )
+    }
+
+    pub fn topbar_surface(_theme: &BentoTheme) -> Background {
+        linear_gradient(
+            180.0,
+            linear_color_stop(hsla(220.0 / 360.0, 0.10, 0.06, 1.0), 0.0),
+            linear_color_stop(hsla(220.0 / 360.0, 0.12, 0.02, 1.0), 1.0),
+        )
+    }
+
+    pub fn sidebar_surface(_theme: &BentoTheme) -> Background {
+        linear_gradient(
+            180.0,
+            linear_color_stop(hsla(220.0 / 360.0, 0.12, 0.07, 1.0), 0.0),
+            linear_color_stop(hsla(220.0 / 360.0, 0.10, 0.025, 1.0), 1.0),
+        )
+    }
+
+    pub fn cta_emphasized(theme: &BentoTheme) -> Background {
+        linear_gradient(
+            145.0,
+            linear_color_stop(
+                hsla(
+                    theme.accent_green.h,
+                    theme.accent_green.s * 0.45,
+                    theme.accent_green.l * 0.32,
+                    1.0,
+                ),
+                0.0,
+            ),
+            linear_color_stop(hsla(220.0 / 360.0, 0.12, 0.05, 1.0), 1.0),
+        )
+    }
+
+    pub fn cta_quiet(_theme: &BentoTheme) -> Background {
+        linear_gradient(
+            145.0,
+            linear_color_stop(hsla(220.0 / 360.0, 0.10, 0.10, 1.0), 0.0),
+            linear_color_stop(hsla(220.0 / 360.0, 0.12, 0.04, 1.0), 1.0),
+        )
+    }
+
+    pub fn header_strip(theme: &BentoTheme) -> Background {
+        linear_gradient(
+            90.0,
+            linear_color_stop(
+                hsla(
+                    theme.accent_green.h,
+                    theme.accent_green.s,
+                    theme.accent_green.l,
+                    0.95,
+                ),
+                0.0,
+            ),
+            linear_color_stop(
+                hsla(
+                    theme.accent_green.h,
+                    theme.accent_green.s,
+                    theme.accent_green.l,
+                    0.0,
+                ),
+                1.0,
+            ),
+        )
+    }
+
+    pub fn accent_strip(color: Hsla) -> Background {
+        linear_gradient(
+            180.0,
+            linear_color_stop(hsla(color.h, color.s, color.l, 0.95), 0.0),
+            linear_color_stop(hsla(color.h, color.s, color.l, 0.0), 1.0),
+        )
+    }
+
+    pub fn notice_glow(color: Hsla) -> Background {
+        linear_gradient(
+            145.0,
+            linear_color_stop(hsla(color.h, color.s * 0.7, color.l * 0.35, 1.0), 0.0),
+            linear_color_stop(hsla(220.0 / 360.0, 0.12, 0.04, 1.0), 1.0),
+        )
+    }
+
+    pub fn gauge_inner(theme: &BentoTheme) -> Background {
+        linear_gradient(
+            165.0,
+            linear_color_stop(hsla(220.0 / 360.0, 0.10, 0.10, 1.0), 0.0),
+            linear_color_stop(
+                hsla(theme.accent_green.h, 0.30, 0.05, 1.0),
+                1.0,
+            ),
+        )
+    }
+
     pub fn green_card(_theme: &BentoTheme) -> Background {
         linear_gradient(
             155.0,
@@ -164,10 +263,10 @@ pub struct BorderRadius {
 impl Default for BorderRadius {
     fn default() -> Self {
         Self {
-            xs: px(4.0),
-            sm: px(8.0),
-            md: px(10.0),
-            lg: px(16.0),
+            xs: px(0.0),
+            sm: px(2.0),
+            md: px(3.0),
+            lg: px(4.0),
         }
     }
 }

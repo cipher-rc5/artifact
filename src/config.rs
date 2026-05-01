@@ -12,6 +12,24 @@ pub struct AppConfig {
     pub logging: LoggingConfig,
     #[serde(default)]
     pub database: DatabaseConfig,
+    #[serde(default)]
+    pub scan: ScanConfig,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeleteMode {
+    #[default]
+    Trash,
+    Permanent,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ScanConfig {
+    #[serde(default)]
+    pub enabled_languages: Option<Vec<String>>,
+    #[serde(default)]
+    pub delete_mode: DeleteMode,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -78,11 +96,7 @@ pub struct DatabaseConfig {
 
 impl AppConfig {
     pub fn load() -> anyhow::Result<Self> {
-        let config_dir = dirs::config_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("artifact");
-
-        let config_path = config_dir.join("config.toml");
+        let config_path = Self::config_path();
 
         if config_path.exists() {
             let content = std::fs::read_to_string(&config_path)?;
@@ -91,6 +105,14 @@ impl AppConfig {
         } else {
             Ok(AppConfig::default())
         }
+    }
+
+    pub fn save(&self) -> anyhow::Result<()> {
+        let config_dir = Self::config_dir();
+        std::fs::create_dir_all(&config_dir)?;
+        let content = toml::to_string_pretty(self)?;
+        std::fs::write(Self::config_path(), content)?;
+        Ok(())
     }
 
     pub fn get_log_dir(&self) -> PathBuf {
@@ -113,5 +135,15 @@ impl AppConfig {
                 .join("artifact")
                 .join("db")
         }
+    }
+
+    fn config_dir() -> PathBuf {
+        dirs::config_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("artifact")
+    }
+
+    fn config_path() -> PathBuf {
+        Self::config_dir().join("config.toml")
     }
 }
