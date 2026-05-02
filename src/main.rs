@@ -15,22 +15,24 @@ use view::ArtifactView;
 
 #[cfg(target_os = "macos")]
 fn set_dock_icon() {
-    use cocoa::appkit::NSApp;
-    use cocoa::base::{id, nil};
-    use cocoa::foundation::NSData;
-    use objc::{class, msg_send, sel, sel_impl};
+    use std::ffi::c_void;
+    use objc2::rc::{Allocated, Retained};
+    use objc2::runtime::AnyObject;
+    use objc2::{class, msg_send};
 
     const APP_ICON: &[u8] = include_bytes!("../assets/app-icon.png");
 
     unsafe {
-        let data =
-            NSData::dataWithBytes_length_(nil, APP_ICON.as_ptr().cast(), APP_ICON.len() as u64);
-        let image: id = msg_send![class!(NSImage), alloc];
-        let image: id = msg_send![image, initWithData:data];
-
-        if image != nil {
-            let app = NSApp();
-            let _: () = msg_send![app, setApplicationIconImage:image];
+        let data: Retained<AnyObject> = msg_send![
+            class!(NSData),
+            dataWithBytes: APP_ICON.as_ptr() as *const c_void,
+            length: APP_ICON.len()
+        ];
+        let alloc: Allocated<AnyObject> = msg_send![class!(NSImage), alloc];
+        let image: Option<Retained<AnyObject>> = msg_send![alloc, initWithData: &*data];
+        if let Some(image) = image {
+            let app: Retained<AnyObject> = msg_send![class!(NSApplication), sharedApplication];
+            let _: () = msg_send![&*app, setApplicationIconImage: &*image];
         }
     }
 }
