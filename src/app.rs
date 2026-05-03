@@ -58,6 +58,24 @@ pub struct StatusNotice {
     pub message: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct HistoryEntry {
+    pub path: String,
+    #[allow(dead_code)]
+    pub dir_type: String,
+    pub size_bytes: i64,
+    pub deleted_at: i64,
+    #[allow(dead_code)]
+    pub project_name: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct HistoryRun {
+    pub started_at: i64,
+    pub entries: Vec<HistoryEntry>,
+    pub total_bytes: i64,
+}
+
 // ---------------------------------------------------------------------------
 // Internal messages
 // ---------------------------------------------------------------------------
@@ -154,6 +172,67 @@ impl ArtifactApp {
     }
     pub fn delete_mode(&self) -> DeleteMode {
         self.config.scan.delete_mode
+    }
+
+    pub fn scan_elapsed_secs(&self) -> Option<f64> {
+        self.scan_progress_data.as_ref().map(|p| p.elapsed_secs)
+    }
+
+    pub fn directories_scanned(&self) -> Option<usize> {
+        self.scan_progress_data
+            .as_ref()
+            .map(|p| p.directories_scanned)
+    }
+
+    pub fn load_history(&self, limit: usize) -> Vec<HistoryRun> {
+        let Some(db) = self.database.as_ref() else {
+            return Vec::new();
+        };
+
+        let records = match db.get_recent_deletions(limit.max(1)) {
+            Ok(r) => r,
+            Err(_) => return Vec::new(),
+        };
+
+        if records.is_empty() {
+            return Vec::new();
+        }
+
+        // Group records that fall within the same run window. We treat any pair
+        // of deletions within RUN_WINDOW_SECS of each other as part of the same
+        // run. Records are descending by deleted_at from the DB.
+        const RUN_WINDOW_SECS: i64 = 60;
+        let mut runs: Vec<HistoryRun> = Vec::new();
+        for rec in records {
+            let entry = HistoryEntry {
+                path: rec.path,
+                dir_type: rec.dir_type,
+                size_bytes: rec.size_bytes,
+                deleted_at: rec.deleted_at,
+                project_name: rec.project_name,
+            };
+
+            match runs.last_mut() {
+                Some(run)
+                    if (run.started_at - entry.deleted_at).abs() <= RUN_WINDOW_SECS =>
+                {
+                    if entry.deleted_at < run.started_at {
+                        run.started_at = entry.deleted_at;
+                    }
+                    run.total_bytes += entry.size_bytes;
+                    run.entries.push(entry);
+                }
+                _ => {
+                    runs.push(HistoryRun {
+                        started_at: entry.deleted_at,
+                        total_bytes: entry.size_bytes,
+                        entries: vec![entry],
+                    });
+                }
+            }
+        }
+
+        runs
     }
 }
 

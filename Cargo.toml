@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 license = "MIT"
 readme = "README.md"
-repository = "https://github.com/cipher/artifact"
+repository = "https://github.com/cipher-rc5/artifact"
 rust-version = "1.94"
 description = "GPUI-based desktop app for finding and reclaiming disk space."
 
@@ -25,13 +25,13 @@ hostname = "0.4.2" # Read the machine hostname for log/db identification.
 jwalk = "0.8.1" # Rayon-parallel directory walker — main scanner traversal.
 
 # Storage / serialization
+humansize = "2.1.3" # Render byte counts as "1.4 GB" in the UI.
 redb = "4.1.0" # Embedded ACID key-value store; persists scan results.
 rkyv = "0.8.16" # Zero-copy (de)serialization for redb-stored records.
 serde = { version = "1.0.228", features = ["derive"] } # Config + JSON model derives.
 serde_json = "1.0.149" # JSON for config import/export and IPC payloads.
 toml = "1.1.2" # TOML parsing for the user config file.
 trash = "5" # Safe cross-platform move-to-trash support for cleanup actions.
-humansize = "2.1.3" # Render byte counts as "1.4 GB" in the UI.
 
 # Logging / observability
 tracing = "0.1.44" # Structured, span-based logging facade.

@@ -1,11 +1,11 @@
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use std::cmp::Reverse;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use crate::app::{ArtifactApp, NoticeKind, ScanState, StatusNotice};
+use crate::app::{ArtifactApp, HistoryRun, NoticeKind, ScanState, StatusNotice};
 use artifact::config::DeleteMode;
 use artifact::directory_item::DirectoryType;
 use artifact::rules::{self, ColorHint};
@@ -32,6 +32,7 @@ enum SidebarView {
     Dashboard,
     Results,
     Browser,
+    History,
     Settings,
 }
 
@@ -40,6 +41,7 @@ enum SidebarIcon {
     Dashboard,
     Results,
     Browser,
+    History,
     Settings,
 }
 
@@ -73,6 +75,15 @@ pub struct ArtifactView {
     app: Entity<ArtifactApp>,
     design: DesignSystem,
     active_view: SidebarView,
+    expanded_rows: HashSet<usize>,
+    expanded_runs: HashSet<i64>,
+    inventory_scroll: ScrollHandle,
+    activity_scroll: ScrollHandle,
+    browser_scroll: ScrollHandle,
+    history_scroll: ScrollHandle,
+    languages_scroll: ScrollHandle,
+    history_cache: Vec<HistoryRun>,
+    history_loaded_at: Option<std::time::Instant>,
 }
 
 impl ArtifactView {
@@ -99,6 +110,15 @@ impl ArtifactView {
             app,
             design: DesignSystem::new(),
             active_view: SidebarView::Dashboard,
+            expanded_rows: HashSet::new(),
+            expanded_runs: HashSet::new(),
+            inventory_scroll: ScrollHandle::new(),
+            activity_scroll: ScrollHandle::new(),
+            browser_scroll: ScrollHandle::new(),
+            history_scroll: ScrollHandle::new(),
+            languages_scroll: ScrollHandle::new(),
+            history_cache: Vec::new(),
+            history_loaded_at: None,
         }
     }
 
@@ -109,6 +129,29 @@ impl ArtifactView {
                 app.close_file_browser(cx);
             }
         });
+        if matches!(view, SidebarView::History) {
+            self.refresh_history(cx);
+        }
+        cx.notify();
+    }
+
+    fn refresh_history(&mut self, cx: &mut Context<Self>) {
+        let runs = self.app.read(cx).load_history(500);
+        self.history_cache = runs;
+        self.history_loaded_at = Some(std::time::Instant::now());
+    }
+
+    fn toggle_row_expanded(&mut self, index: usize, cx: &mut Context<Self>) {
+        if !self.expanded_rows.insert(index) {
+            self.expanded_rows.remove(&index);
+        }
+        cx.notify();
+    }
+
+    fn toggle_run_expanded(&mut self, run_id: i64, cx: &mut Context<Self>) {
+        if !self.expanded_runs.insert(run_id) {
+            self.expanded_runs.remove(&run_id);
+        }
         cx.notify();
     }
 
@@ -155,7 +198,7 @@ impl Render for ArtifactView {
             .iter()
             .map(|e| (e.name.clone(), e.path.clone()))
             .collect();
-        let scan_log: Vec<String> = app.scan_log.iter().rev().take(40).cloned().collect();
+        let scan_log: Vec<String> = app.scan_log.iter().rev().cloned().collect();
 
         let view_entries: Vec<ViewEntry> = app
             .visible_entries()
@@ -186,11 +229,8 @@ impl Render for ArtifactView {
             .and_then(|name| name.into_string().ok())
             .unwrap_or_else(|| "WORKSTATION".to_string())
             .to_uppercase();
-        let load_percent = if item_count == 0 {
-            12
-        } else {
-            ((selected_count.max(1) * 100) / item_count.max(1)).clamp(12, 96)
-        };
+        let scan_dirs = app.directories_scanned().unwrap_or(0);
+        let scan_elapsed = app.scan_elapsed_secs().unwrap_or(0.0);
 
         let _ = app;
 
@@ -214,7 +254,9 @@ impl Render for ArtifactView {
                         &system_id,
                         scan_state,
                         &scan_path,
-                        load_percent,
+                        scan_dirs,
+                        scan_elapsed,
+                        item_count,
                         viewport_width < px(1260.0),
                     ))
                     .when(notice.is_some(), |root| {
@@ -231,9 +273,12 @@ impl Render for ArtifactView {
                             .id("artifact-content")
                             .flex_1()
                             .min_h_0()
-                            .overflow_y_scroll()
+                            .flex()
+                            .flex_col()
+                            .overflow_hidden()
                             .px(px(14.0))
                             .pt(px(14.0))
+                            .pb(px(10.0))
                             .child(match active_view {
                             SidebarView::Dashboard => self.render_dashboard_view(
                                 d,
@@ -248,7 +293,7 @@ impl Render for ArtifactView {
                                 viewport_width,
                                 cx,
                             ),
-                            SidebarView::Results => Self::render_results_view(
+                            SidebarView::Results => self.render_results_view(
                                 d,
                                 scan_state,
                                 &view_entries,
@@ -259,7 +304,7 @@ impl Render for ArtifactView {
                                 deleted_count,
                                 delete_mode,
                                 viewport_width,
-                                self.app.clone(),
+                                cx,
                             ),
                             SidebarView::Browser => self.render_browser_view(
                                 d,
@@ -274,6 +319,7 @@ impl Render for ArtifactView {
                                 viewport_width,
                                 cx,
                             ),
+                            SidebarView::History => self.render_history_view(d, cx),
                             SidebarView::Settings => self.render_settings_view(
                                 d,
                                 &scan_path,
@@ -354,6 +400,14 @@ impl ArtifactView {
                         active_view == SidebarView::Browser,
                         cx.listener(|this, _, _, cx| {
                             this.open_browser_view(cx);
+                        }),
+                    ))
+                    .child(Self::sidebar_button(
+                        d,
+                        SidebarIcon::History,
+                        active_view == SidebarView::History,
+                        cx.listener(|this, _, _, cx| {
+                            this.navigate_to_view(SidebarView::History, cx);
                         }),
                     ))
                     .child(Self::sidebar_button(
@@ -454,7 +508,9 @@ impl ArtifactView {
         system_id: &str,
         scan_state: ScanState,
         scan_path: &str,
-        load_percent: usize,
+        scan_dirs: usize,
+        scan_elapsed: f64,
+        artifact_count: usize,
         compact: bool,
     ) -> Div {
         let status_text = match scan_state {
@@ -469,7 +525,7 @@ impl ArtifactView {
             .gap(px(12.0))
             .child(
                 div()
-                    .text_size(px(22.0))
+                    .text_size(px(18.0))
                     .font_weight(FontWeight::BLACK)
                     .text_color(d.colors.text_primary)
                     .child("ARTIFACT"),
@@ -481,6 +537,19 @@ impl ArtifactView {
                     .text_color(d.colors.text_secondary)
                     .child("BUILD CLEANUP V2.4.0"),
             );
+
+        let session_line = match scan_state {
+            ScanState::Idle if artifact_count == 0 => "SESSION: NONE".to_string(),
+            ScanState::Scanning => format!(
+                "SESSION: {} DIRS / {}",
+                format_number(scan_dirs),
+                utils::format_elapsed(scan_elapsed)
+            ),
+            _ => format!(
+                "SESSION: {} ARTIFACTS",
+                format_number(artifact_count)
+            ),
+        };
 
         let telemetry = div()
             .flex()
@@ -498,16 +567,8 @@ impl ArtifactView {
                     "PATH: {}",
                     truncate_end(scan_path, if compact { 18 } else { 24 })
                 ),
-                &format!("LOAD: {load_percent}%"),
-            ))
-            .child(div().w(px(118.0)).child(Self::meter_bar(
-                d,
-                load_percent.div_ceil(25).clamp(1, 4),
-                4,
-                d.colors.text_primary,
-                px(26.0),
-                px(6.0),
-            )));
+                &session_line,
+            ));
 
         let accent_line = div()
             .h(px(1.0))
@@ -759,6 +820,31 @@ impl ArtifactView {
                         .rounded(px(3.0))
                         .bg(alpha(color, if active { 0.12 } else { 0.03 })),
                 ),
+            SidebarIcon::History => div()
+                .w(px(18.0))
+                .h(px(18.0))
+                .border_1()
+                .border_color(color)
+                .rounded_full()
+                .relative()
+                .child(
+                    div()
+                        .absolute()
+                        .top(px(3.0))
+                        .left(px(7.0))
+                        .w(px(2.0))
+                        .h(px(6.0))
+                        .bg(color),
+                )
+                .child(
+                    div()
+                        .absolute()
+                        .top(px(8.0))
+                        .left(px(8.0))
+                        .w(px(5.0))
+                        .h(px(2.0))
+                        .bg(color),
+                ),
             SidebarIcon::Settings => div()
                 .w(px(18.0))
                 .h(px(18.0))
@@ -835,19 +921,23 @@ impl ArtifactView {
         let left_column = div()
             .w(side_panel_width)
             .flex_shrink_0()
+            .h_full()
             .flex()
             .flex_col()
-            .gap(px(14.0))
+            .gap(px(12.0))
             .child(Self::panel(
                 d,
                 "BUILD_ARTIFACTS_FOUND",
                 "H15 // ARCHIVE",
                 div()
-                    .px(px(18.0))
-                    .pb(px(18.0))
+                    .flex_1()
+                    .min_h_0()
+                    .px(px(16.0))
+                    .py(px(14.0))
                     .flex()
                     .flex_col()
-                    .gap(px(18.0))
+                    .gap(px(12.0))
+                    .overflow_hidden()
                     .children(if artifact_buckets.is_empty() {
                         vec![
                             div()
@@ -865,7 +955,7 @@ impl ArtifactView {
                                 div()
                                     .flex()
                                     .flex_col()
-                                    .gap(px(8.0))
+                                    .gap(px(6.0))
                                     .child(
                                         div()
                                             .flex()
@@ -890,7 +980,7 @@ impl ArtifactView {
                                         7,
                                         d.colors.text_primary,
                                         bucket_segment_width,
-                                        px(12.0),
+                                        px(10.0),
                                     ))
                             })
                             .collect()
@@ -901,21 +991,26 @@ impl ArtifactView {
                 "SAVINGS_ANALYSIS",
                 "H16 // DISK",
                 div()
-                    .px(px(18.0))
-                    .pb(px(18.0))
+                    .flex_1()
+                    .min_h_0()
+                    .px(px(16.0))
+                    .py(px(14.0))
                     .flex()
                     .flex_col()
-                    .gap(px(20.0))
+                    .justify_between()
+                    .gap(px(12.0))
+                    .overflow_hidden()
                     .child(Self::render_savings_chart(d, chart_buckets))
                     .child(
                         div()
+                            .flex_shrink_0()
                             .flex()
                             .flex_col()
                             .items_center()
-                            .gap(px(6.0))
+                            .gap(px(4.0))
                             .child(
                                 div()
-                                    .text_size(px(32.0))
+                                    .text_size(px(26.0))
                                     .font_weight(FontWeight::BLACK)
                                     .text_color(d.colors.text_primary)
                                     .child(utils::format_size(progress_size)),
@@ -932,11 +1027,12 @@ impl ArtifactView {
         let center_column = div()
             .flex_1()
             .min_w_0()
+            .h_full()
             .flex()
             .flex_col()
             .items_center()
             .justify_center()
-            .gap(px(18.0))
+            .gap(px(14.0))
             .child(Self::render_gauge(
                 d,
                 readiness,
@@ -952,7 +1048,8 @@ impl ArtifactView {
                     .flex()
                     .flex_wrap()
                     .items_center()
-                    .gap(px(28.0))
+                    .justify_center()
+                    .gap(px(24.0))
                     .child(Self::status_callout(
                         d,
                         "STATUS",
@@ -989,8 +1086,10 @@ impl ArtifactView {
             .child(
                 div()
                     .flex()
+                    .flex_wrap()
+                    .justify_center()
                     .items_center()
-                    .gap(px(48.0))
+                    .gap(px(36.0))
                     .child(
                         div()
                             .text_size(d.typography.size_xs)
@@ -1005,51 +1104,62 @@ impl ArtifactView {
                     ),
             );
 
-        let frag_percent = if total_size == 0 {
-            12
+        let selection_pct = if item_count == 0 {
+            0
         } else {
-            ((selected_count.max(1) * 100) / item_count.max(1)).clamp(12, 98)
+            (selected_count * 100) / item_count.max(1)
+        };
+        let recoverable_total = utils::format_size(total_size);
+        let selected_segments = if item_count == 0 {
+            0
+        } else {
+            (selection_pct.max(1)).div_ceil(15).clamp(1, 7)
         };
         let right_column = div()
             .w(side_panel_width)
             .flex_shrink_0()
+            .h_full()
             .flex()
             .flex_col()
-            .gap(px(14.0))
+            .gap(px(12.0))
             .child(Self::panel(
                 d,
-                "SYSTEM_HEALTH",
-                "H2 // DATA",
+                "SESSION_METRICS",
+                "REAL // DATA",
                 div()
-                    .px(px(18.0))
-                    .pb(px(18.0))
+                    .flex_shrink_0()
+                    .px(px(16.0))
+                    .py(px(14.0))
                     .flex()
                     .flex_col()
-                    .gap(px(14.0))
+                    .gap(px(12.0))
                     .child(Self::health_metric(
                         d,
-                        "DISK_LATENCY",
-                        if scan_state == ScanState::Scanning {
-                            "ACTIVE"
-                        } else {
-                            "OPTIMAL"
-                        },
+                        "ARTIFACTS",
+                        &format_number(item_count),
                         d.colors.accent_green,
-                        7,
+                        item_count.div_ceil(50).clamp(0, 7),
                     ))
                     .child(Self::health_metric(
                         d,
-                        "FILE_FRAG",
-                        &format!("{frag_percent:.1}%"),
+                        "SELECTED",
+                        &format!("{selected_count} / {selection_pct}%"),
                         d.colors.accent_yellow,
-                        frag_percent.div_ceil(15).clamp(1, 7),
+                        selected_segments,
+                    ))
+                    .child(Self::health_metric(
+                        d,
+                        "TOTAL_SIZE",
+                        &recoverable_total,
+                        d.colors.accent_blue,
+                        if total_size == 0 { 0 } else { 4 },
                     )),
             ))
             .child(Self::panel(
                 d,
                 "ACTIVITY_LOG",
-                "",
-                Self::render_activity_log(d, scan_log),
+                "LIVE",
+                self.render_activity_log(d, scan_log),
             ));
 
         if compact {
@@ -1058,7 +1168,7 @@ impl ArtifactView {
                 .flex_col()
                 .flex_1()
                 .min_h_0()
-                .gap(px(14.0))
+                .gap(px(12.0))
                 .child(center_column)
                 .child(left_column)
                 .child(right_column)
@@ -1068,7 +1178,7 @@ impl ArtifactView {
                 .flex_row()
                 .flex_1()
                 .min_h_0()
-                .gap(px(14.0))
+                .gap(px(12.0))
                 .child(left_column)
                 .child(center_column)
                 .child(right_column)
@@ -1076,6 +1186,7 @@ impl ArtifactView {
     }
 
     fn render_results_view(
+        &self,
         d: DesignSystem,
         scan_state: ScanState,
         entries: &[ViewEntry],
@@ -1086,46 +1197,42 @@ impl ArtifactView {
         deleted_count: usize,
         delete_mode: DeleteMode,
         viewport_width: Pixels,
-        app: Entity<ArtifactApp>,
+        cx: &mut Context<Self>,
     ) -> Div {
         let compact = viewport_width < px(1180.0);
+        let app = self.app.clone();
         let max_bytes = entries
             .iter()
             .map(|entry| entry.size_bytes)
             .max()
             .unwrap_or(1);
         let scan_state_text = match scan_state {
-            ScanState::Idle => "UNKNOWN",
-            ScanState::Scanning => "ACTIVE",
-            ScanState::Complete => "LOW_IMPACT",
+            ScanState::Idle => "IDLE",
+            ScanState::Scanning => "SCANNING",
+            ScanState::Complete => "READY",
         };
 
         let inventory_panel = Self::panel(
             d,
             "ARTIFACT_INVENTORY",
-            "ID: 992-70",
+            &format!("{} ITEMS", format_number(entries.len())),
             div()
                 .flex()
                 .flex_col()
                 .flex_1()
                 .min_h_0()
-                .px(px(18.0))
-                .pb(px(18.0))
-                .gap(px(12.0))
+                .px(px(14.0))
+                .pb(px(12.0))
+                .pt(px(8.0))
+                .gap(px(8.0))
                 .child(Self::inventory_header(d, compact))
-                .child(Self::inventory_rows(
-                    d,
-                    entries,
-                    max_bytes,
-                    compact,
-                    app.clone(),
-                )),
+                .child(self.render_inventory_rows(d, entries, max_bytes, compact, cx)),
         );
 
         let summary_panel = Self::panel(
             d,
             "PURGE_PARAMETER_V2",
-            "H19 // ANALYST",
+            "ACTION",
             Self::results_sidebar(
                 d,
                 total_size,
@@ -1146,7 +1253,7 @@ impl ArtifactView {
                 .flex_col()
                 .flex_1()
                 .min_h_0()
-                .gap(px(14.0))
+                .gap(px(12.0))
                 .child(inventory_panel)
                 .child(summary_panel)
         } else {
@@ -1155,9 +1262,9 @@ impl ArtifactView {
                 .flex_row()
                 .flex_1()
                 .min_h_0()
-                .gap(px(14.0))
+                .gap(px(12.0))
                 .child(inventory_panel)
-                .child(div().w(px(530.0)).flex_shrink_0().child(summary_panel))
+                .child(div().w(px(420.0)).flex_shrink_0().child(summary_panel))
         }
     }
 
@@ -1185,7 +1292,7 @@ impl ArtifactView {
             "SELECT_SCAN_ROOT",
             "BROWSER // FS",
             if file_browser_open {
-                Self::render_browser_list(d, browse_path, browse_entries, cx, &self.app)
+                self.render_browser_list(d, browse_path, browse_entries, cx)
             } else {
                 div()
                     .px(px(18.0))
@@ -1326,23 +1433,25 @@ impl ArtifactView {
     }
 
     fn render_browser_list(
+        &self,
         d: DesignSystem,
         browse_path: &str,
         entries: &[(String, PathBuf)],
         cx: &mut Context<Self>,
-        app: &Entity<ArtifactApp>,
     ) -> Div {
-        let app_cancel = app.clone();
-        let app_select = app.clone();
+        let app_cancel = self.app.clone();
+        let app_select = self.app.clone();
 
         let mut list = div()
             .id("browser-list")
+            .track_scroll(&self.browser_scroll)
             .flex()
             .flex_col()
             .flex_1()
             .min_h_0()
             .overflow_y_scroll()
-            .px(px(18.0))
+            .pl(px(2.0))
+            .pr(px(12.0))
             .gap(px(4.0));
 
         if entries.is_empty() {
@@ -1355,7 +1464,7 @@ impl ArtifactView {
             );
         } else {
             for (name, path) in entries {
-                let app_nav = app.clone();
+                let app_nav = self.app.clone();
                 let nav_path = path.clone();
                 let is_parent = name == "..";
                 let label = if is_parent {
@@ -1367,8 +1476,8 @@ impl ArtifactView {
                 list = list.child(
                     div()
                         .id(ElementId::Name(format!("browse-{}", path.display()).into()))
-                        .px(px(14.0))
-                        .py(px(10.0))
+                        .px(px(12.0))
+                        .py(px(8.0))
                         .border_1()
                         .border_color(d.colors.border_secondary)
                         .rounded(d.radius.xs)
@@ -1396,22 +1505,32 @@ impl ArtifactView {
             }
         }
 
+        let list_with_overlay = div()
+            .flex_1()
+            .min_h_0()
+            .flex()
+            .flex_col()
+            .relative()
+            .child(list)
+            .child(Self::scroll_overlay(d, &self.browser_scroll));
+
         div()
             .flex()
             .flex_col()
             .flex_1()
             .min_h_0()
-            .px(px(18.0))
-            .pb(px(18.0))
-            .gap(px(14.0))
+            .px(px(14.0))
+            .pb(px(14.0))
+            .pt(px(8.0))
+            .gap(px(10.0))
             .child(
                 div()
                     .text_size(d.typography.size_xs)
                     .text_color(d.colors.text_secondary)
-                    .child(truncate_end(browse_path, 56)),
+                    .child(truncate_end(browse_path, 72)),
             )
             .child(Self::separator(d))
-            .child(list)
+            .child(list_with_overlay)
             .child(Self::separator(d))
             .child(
                 div()
@@ -1458,7 +1577,7 @@ impl ArtifactView {
             d,
             "SCAN_LANGUAGES",
             "FILTERS // RULESET",
-            Self::language_settings_list(d, language_settings, &self.app),
+            self.language_settings_list(d, language_settings),
         );
 
         let actions_panel = Self::panel(
@@ -1544,18 +1663,244 @@ impl ArtifactView {
         }
     }
 
-    fn language_settings_list(
+    fn render_history_view(&self, d: DesignSystem, cx: &mut Context<Self>) -> Div {
+        let runs = self.history_cache.clone();
+        let total_runs = runs.len();
+        let total_records: usize = runs.iter().map(|r| r.entries.len()).sum();
+        let total_bytes: i64 = runs.iter().map(|r| r.total_bytes).sum();
+
+        let list_panel = Self::panel(
+            d,
+            "CLEANUP_HISTORY",
+            &format!("{} RUNS", format_number(total_runs)),
+            self.render_history_list(d, &runs, cx),
+        );
+
+        let summary_panel = Self::panel(
+            d,
+            "HISTORY_SUMMARY",
+            "AGGREGATE",
+            div()
+                .flex()
+                .flex_col()
+                .flex_shrink_0()
+                .px(px(16.0))
+                .py(px(14.0))
+                .gap(px(14.0))
+                .child(Self::results_metric_line(
+                    d,
+                    "TOTAL_RUNS",
+                    &format_number(total_runs),
+                ))
+                .child(Self::separator(d))
+                .child(Self::results_metric_line(
+                    d,
+                    "TOTAL_DELETIONS",
+                    &format_number(total_records),
+                ))
+                .child(Self::separator(d))
+                .child(Self::results_metric_line(
+                    d,
+                    "SPACE_RECLAIMED",
+                    &utils::format_size(total_bytes.max(0) as u64),
+                ))
+                .child(Self::separator(d))
+                .child(Self::terminal_button(
+                    d,
+                    "history-refresh",
+                    "REFRESH",
+                    true,
+                    false,
+                    cx.listener(|this, _, _, cx| {
+                        this.refresh_history(cx);
+                        cx.notify();
+                    }),
+                )),
+        );
+
+        div()
+            .flex()
+            .flex_row()
+            .flex_1()
+            .min_h_0()
+            .gap(px(12.0))
+            .child(list_panel)
+            .child(div().w(px(280.0)).flex_shrink_0().child(summary_panel))
+    }
+
+    fn render_history_list(
+        &self,
         d: DesignSystem,
-        language_settings: &[LanguageSetting],
-        app: &Entity<ArtifactApp>,
+        runs: &[HistoryRun],
+        cx: &mut Context<Self>,
     ) -> Div {
         let mut list = div()
+            .id("history-list")
+            .track_scroll(&self.history_scroll)
             .flex()
             .flex_col()
             .flex_1()
             .min_h_0()
-            .px(px(18.0))
-            .pb(px(18.0));
+            .overflow_y_scroll()
+            .pl(px(12.0))
+            .pr(px(14.0))
+            .pt(px(8.0))
+            .pb(px(12.0))
+            .gap(px(8.0));
+
+        if runs.is_empty() {
+            list = list.child(
+                div()
+                    .py(px(16.0))
+                    .text_size(d.typography.size_sm)
+                    .text_color(d.colors.text_tertiary)
+                    .child("NO PRIOR CLEANUP RUNS RECORDED"),
+            );
+        } else {
+            for run in runs {
+                let run_id = run.started_at;
+                let expanded = self.expanded_runs.contains(&run_id);
+                let label = format_unix_time(run.started_at);
+                let bytes = run.total_bytes.max(0) as u64;
+                let toggle_id = run_id;
+
+                let header = div()
+                    .id(ElementId::Name(format!("history-run-{run_id}").into()))
+                    .px(px(12.0))
+                    .py(px(10.0))
+                    .border_1()
+                    .border_color(if expanded {
+                        d.colors.accent_green
+                    } else {
+                        d.colors.border_secondary
+                    })
+                    .rounded(d.radius.xs)
+                    .bg(if expanded {
+                        Gradients::cta_emphasized(&d.colors)
+                    } else {
+                        Gradients::cta_quiet(&d.colors)
+                    })
+                    .cursor_pointer()
+                    .hover(|style| style.bg(alpha(d.colors.text_primary, 0.05)))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.toggle_run_expanded(toggle_id, cx);
+                    }))
+                    .flex()
+                    .flex_col()
+                    .gap(px(6.0))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .gap(px(12.0))
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(8.0))
+                                    .child(
+                                        div()
+                                            .w(px(10.0))
+                                            .text_size(d.typography.size_xs)
+                                            .text_color(d.colors.text_tertiary)
+                                            .child(if expanded { "▾" } else { "▸" }.to_string()),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(d.typography.size_sm)
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .text_color(d.colors.text_primary)
+                                            .child(label),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .text_size(d.typography.size_xs)
+                                    .text_color(d.colors.text_secondary)
+                                    .child(format!(
+                                        "{} ITEMS // {}",
+                                        format_number(run.entries.len()),
+                                        utils::format_size(bytes)
+                                    )),
+                            ),
+                    );
+
+                let entry_block: Option<Div> = if expanded {
+                    let mut block = div()
+                        .pt(px(4.0))
+                        .pl(px(20.0))
+                        .pr(px(4.0))
+                        .flex()
+                        .flex_col()
+                        .gap(px(4.0));
+                    for entry in &run.entries {
+                        block = block.child(
+                            div()
+                                .flex()
+                                .items_start()
+                                .gap(px(8.0))
+                                .child(
+                                    div()
+                                        .w(px(64.0))
+                                        .flex_shrink_0()
+                                        .text_size(d.typography.size_xs)
+                                        .text_color(d.colors.text_tertiary)
+                                        .child(utils::format_size(
+                                            entry.size_bytes.max(0) as u64,
+                                        )),
+                                )
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .text_size(d.typography.size_xs)
+                                        .text_color(d.colors.text_secondary)
+                                        .child(entry.path.clone()),
+                                ),
+                        );
+                    }
+                    Some(block)
+                } else {
+                    None
+                };
+
+                let mut wrapper = div().flex().flex_col().gap(px(4.0)).child(header);
+                if let Some(block) = entry_block {
+                    wrapper = wrapper.child(block);
+                }
+                list = list.child(wrapper);
+            }
+        }
+
+        div()
+            .flex_1()
+            .min_h_0()
+            .flex()
+            .flex_col()
+            .relative()
+            .child(list)
+            .child(Self::scroll_overlay(d, &self.history_scroll))
+    }
+
+    fn language_settings_list(
+        &self,
+        d: DesignSystem,
+        language_settings: &[LanguageSetting],
+    ) -> Div {
+        let app = &self.app;
+        let mut list = div()
+            .id("language-settings-list")
+            .track_scroll(&self.languages_scroll)
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .pl(px(16.0))
+            .pr(px(16.0))
+            .pt(px(4.0))
+            .pb(px(14.0));
 
         for (index, setting) in language_settings.iter().enumerate() {
             let app_language = app.clone();
@@ -1623,7 +1968,14 @@ impl ArtifactView {
             );
         }
 
-        list
+        div()
+            .flex_1()
+            .min_h_0()
+            .flex()
+            .flex_col()
+            .relative()
+            .child(list)
+            .child(Self::scroll_overlay(d, &self.languages_scroll))
     }
 
     fn delete_mode_option(
@@ -1677,10 +2029,73 @@ impl ArtifactView {
             )
     }
 
+    fn scroll_overlay(d: DesignSystem, handle: &ScrollHandle) -> Div {
+        let bounds = handle.bounds();
+        let max = handle.max_offset();
+        let visible: f32 = bounds.size.height.into();
+        let max_height: f32 = max.height.into();
+        let content = visible + max_height;
+
+        let track_height = visible.max(1.0);
+        let thumb_ratio = if content <= 0.0 || visible <= 0.0 {
+            1.0_f32
+        } else {
+            (visible / content).clamp(0.08, 1.0)
+        };
+        let thumb_height = (track_height * thumb_ratio).max(24.0);
+
+        let offset_y: f32 = handle.offset().y.into();
+        let scroll_y = -offset_y;
+        let max_y = max_height.max(0.0);
+        let progress = if max_y <= 0.0 {
+            0.0_f32
+        } else {
+            (scroll_y / max_y).clamp(0.0, 1.0)
+        };
+        let thumb_top = progress * (track_height - thumb_height).max(0.0);
+
+        // Hide the bar entirely when there is no overflow.
+        if max_y <= 0.5 {
+            return div().w(px(0.0));
+        }
+
+        div()
+            .absolute()
+            .top(px(0.0))
+            .right(px(0.0))
+            .bottom(px(0.0))
+            .w(px(8.0))
+            .child(
+                div()
+                    .absolute()
+                    .top(px(0.0))
+                    .left(px(2.0))
+                    .bottom(px(0.0))
+                    .w(px(2.0))
+                    .bg(alpha(d.colors.text_primary, 0.05)),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .top(px(thumb_top))
+                    .left(px(0.0))
+                    .w(px(6.0))
+                    .h(px(thumb_height))
+                    .bg(linear_gradient(
+                        180.0,
+                        linear_color_stop(alpha(d.colors.accent_green, 0.85), 0.0),
+                        linear_color_stop(alpha(d.colors.accent_green, 0.35), 1.0),
+                    ))
+                    .border_l_1()
+                    .border_color(alpha(d.colors.accent_green, 0.55)),
+            )
+    }
+
     fn panel(d: DesignSystem, title: &'static str, meta: &str, body: Div) -> Div {
         div()
             .flex_1()
             .min_h_0()
+            .min_w_0()
             .bg(Gradients::panel_surface(&d.colors))
             .border_1()
             .border_color(d.colors.border_primary)
@@ -1696,12 +2111,14 @@ impl ArtifactView {
             )
             .child(
                 div()
-                    .px(px(18.0))
-                    .pt(px(14.0))
-                    .pb(px(10.0))
+                    .flex_shrink_0()
+                    .px(px(16.0))
+                    .pt(px(12.0))
+                    .pb(px(8.0))
                     .flex()
                     .items_center()
                     .justify_between()
+                    .gap(px(16.0))
                     .border_b_1()
                     .border_color(d.colors.border_secondary)
                     .child(
@@ -1709,6 +2126,7 @@ impl ArtifactView {
                             .flex()
                             .items_center()
                             .gap(px(8.0))
+                            .pr(px(12.0))
                             .child(
                                 div()
                                     .w(px(6.0))
@@ -1719,12 +2137,21 @@ impl ArtifactView {
                     )
                     .child(
                         div()
+                            .flex_shrink_0()
                             .text_size(d.typography.size_xs)
                             .text_color(d.colors.text_tertiary)
                             .child(meta.to_string()),
                     ),
             )
-            .child(body)
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .flex()
+                    .flex_col()
+                    .overflow_hidden()
+                    .child(body),
+            )
     }
 
     fn panel_label(d: DesignSystem, text: &'static str) -> Div {
@@ -1781,7 +2208,9 @@ impl ArtifactView {
 
         div()
             .w_full()
-            .h(px(150.0))
+            .flex_1()
+            .min_h(px(70.0))
+            .max_h(px(110.0))
             .flex()
             .items_end()
             .gap(px(6.0))
@@ -1794,9 +2223,9 @@ impl ArtifactView {
                         size_bytes: 0,
                     });
                 let height = if max == 0 {
-                    24.0
+                    20.0
                 } else {
-                    24.0 + (bucket.size_bytes as f32 / max as f32) * 78.0
+                    20.0 + (bucket.size_bytes as f32 / max as f32) * 58.0
                 };
                 let top = if index == 3 {
                     d.colors.accent_green
@@ -1843,15 +2272,15 @@ impl ArtifactView {
         progress_path: &str,
         compact: bool,
     ) -> Div {
-        let outer_size = if compact { px(220.0) } else { px(280.0) };
-        let inner_size = if compact { px(132.0) } else { px(168.0) };
-        let readiness_size = if compact { px(34.0) } else { px(44.0) };
+        let outer_size = if compact { px(180.0) } else { px(220.0) };
+        let inner_size = if compact { px(108.0) } else { px(132.0) };
+        let readiness_size = if compact { px(28.0) } else { px(34.0) };
 
         div()
             .flex()
             .flex_col()
             .items_center()
-            .gap(px(18.0))
+            .gap(px(12.0))
             .child(
                 div()
                     .w(outer_size)
@@ -1968,17 +2397,20 @@ impl ArtifactView {
             .child(Self::meter_bar(d, filled, 7, color, px(50.0), px(4.0)))
     }
 
-    fn render_activity_log(d: DesignSystem, scan_log: &[String]) -> Div {
+    fn render_activity_log(&self, d: DesignSystem, scan_log: &[String]) -> Div {
         let mut log = div()
             .id("activity-log")
+            .track_scroll(&self.activity_scroll)
             .flex()
             .flex_col()
             .flex_1()
             .min_h_0()
             .overflow_y_scroll()
-            .px(px(18.0))
-            .pb(px(18.0))
-            .gap(px(8.0));
+            .pl(px(14.0))
+            .pr(px(16.0))
+            .pb(px(14.0))
+            .pt(px(8.0))
+            .gap(px(6.0));
 
         if scan_log.is_empty() {
             log = log.child(
@@ -1995,94 +2427,90 @@ impl ArtifactView {
                         .gap(px(10.0))
                         .child(
                             div()
-                                .w(px(56.0))
+                                .w(px(40.0))
                                 .flex_shrink_0()
                                 .text_size(d.typography.size_xs)
                                 .text_color(d.colors.text_tertiary)
-                                .child(format!("19:{:02}:{:02}", index / 2, index % 60)),
+                                .child(format!("#{:03}", index + 1)),
                         )
                         .child(
                             div()
+                                .flex_1()
+                                .min_w_0()
                                 .text_size(d.typography.size_xs)
                                 .text_color(d.colors.text_secondary)
-                                .child(truncate_end(path, 42)),
+                                .child(path.clone()),
                         ),
                 );
             }
         }
 
-        div().flex_1().min_h_0().child(log)
+        div()
+            .flex_1()
+            .min_h_0()
+            .flex()
+            .flex_col()
+            .relative()
+            .child(log)
+            .child(Self::scroll_overlay(d, &self.activity_scroll))
     }
 
     fn inventory_header(d: DesignSystem, compact: bool) -> Div {
+        let header = |label: &str| {
+            div()
+                .text_size(d.typography.size_xs)
+                .text_color(d.colors.text_tertiary)
+                .child(label.to_string())
+        };
+
+        let base = div()
+            .w_full()
+            .px(px(12.0))
+            .py(px(8.0))
+            .border_b_1()
+            .border_color(d.colors.border_secondary)
+            .bg(Gradients::topbar_surface(&d.colors))
+            .flex()
+            .items_center()
+            .gap(px(12.0));
+
         if compact {
-            div()
-                .w_full()
-                .px(px(20.0))
-                .py(px(12.0))
-                .border_b_1()
-                .border_color(d.colors.border_secondary)
-                .bg(Gradients::topbar_surface(&d.colors))
-                .child(
-                    div()
-                        .text_size(d.typography.size_xs)
-                        .text_color(d.colors.text_secondary)
-                        .child("ARTIFACTS"),
-                )
+            base.child(div().w(px(18.0)).flex_shrink_0())
+                .child(header("COMPONENT_PATH").flex_1())
+                .child(header("SIZE").w(px(64.0)).flex_shrink_0())
+                .child(header("ACTION").w(px(36.0)).flex_shrink_0())
         } else {
-            div()
-                .w_full()
-                .px(px(20.0))
-                .py(px(12.0))
-                .border_b_1()
-                .border_color(d.colors.border_secondary)
-                .bg(Gradients::topbar_surface(&d.colors))
-                .flex()
-                .items_center()
-                .gap(px(16.0))
-                .child(
-                    div()
-                        .flex_1()
-                        .text_size(d.typography.size_xs)
-                        .text_color(d.colors.text_secondary)
-                        .child("COMPONENT_PATH"),
-                )
-                .child(
-                    div()
-                        .w(px(190.0))
-                        .text_size(d.typography.size_xs)
-                        .text_color(d.colors.text_secondary)
-                        .child("METRIC_SIZE"),
-                )
-                .child(
-                    div()
-                        .w(px(90.0))
-                        .text_size(d.typography.size_xs)
-                        .text_color(d.colors.text_secondary)
-                        .child("ACTION"),
-                )
+            base.child(div().w(px(18.0)).flex_shrink_0())
+                .child(header("COMPONENT_PATH").flex_1())
+                .child(header("TYPE").w(px(112.0)).flex_shrink_0())
+                .child(header("SIZE").w(px(72.0)).flex_shrink_0())
+                .child(header("METRIC").w(px(96.0)).flex_shrink_0())
+                .child(header("ACTION").w(px(36.0)).flex_shrink_0())
         }
     }
 
-    fn inventory_rows(
+    fn render_inventory_rows(
+        &self,
         d: DesignSystem,
         entries: &[ViewEntry],
         max_bytes: u64,
         compact: bool,
-        app: Entity<ArtifactApp>,
+        cx: &mut Context<Self>,
     ) -> Div {
         let mut rows = div()
             .id("inventory-rows")
+            .track_scroll(&self.inventory_scroll)
             .flex()
             .flex_col()
             .flex_1()
             .min_h_0()
-            .overflow_y_scroll();
+            .overflow_y_scroll()
+            .pr(px(12.0));
 
         if entries.is_empty() {
             rows = rows.child(
                 div()
-                    .px(px(20.0))
+                    .px(px(14.0))
                     .py(px(20.0))
                     .text_size(d.typography.size_sm)
                     .text_color(d.colors.text_tertiary)
@@ -2090,203 +2518,213 @@ impl ArtifactView {
             );
         } else {
             for entry in entries {
-                let app_row = app.clone();
-                let app_toggle = app.clone();
                 let index = entry.index;
-                let path = entry.path.clone();
-                let project_name = entry.project_name.clone();
-                let size_bytes = entry.size_bytes;
-                let selected = entry.selected;
-                let is_orphaned = entry.is_orphaned;
-                let dir_type = entry.dir_type;
-
-                let filled = scaled_segments_from_max(size_bytes, max_bytes, 6);
-                let size_color = rule_color(d, dir_type.rule.color_hint);
-                let type_label = entry_type_label(dir_type);
-                let status_label = if is_orphaned { "ORPHANED" } else { type_label };
-
-                let row_body = if compact {
-                    div()
-                        .id(ElementId::Name(format!("inventory-{index}").into()))
-                        .px(px(20.0))
-                        .py(px(16.0))
-                        .flex()
-                        .flex_col()
-                        .gap(px(14.0))
-                        .bg(if selected {
-                            Gradients::cta_emphasized(&d.colors)
-                        } else {
-                            Gradients::cta_quiet(&d.colors)
-                        })
-                        .border_l_2()
-                        .border_color(if selected {
-                            d.colors.accent_green
-                        } else {
-                            alpha(d.colors.bg_primary, 0.0)
-                        })
-                        .cursor_pointer()
-                        .hover(|style| style.bg(alpha(d.colors.text_primary, 0.05)))
-                        .on_click(move |_, _, cx| {
-                            app_row.update(cx, |app, cx| app.toggle_selection(index, cx));
-                        })
-                        .child(
-                            div()
-                                .flex()
-                                .items_start()
-                                .justify_between()
-                                .gap(px(16.0))
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .min_w_0()
-                                        .flex()
-                                        .flex_col()
-                                        .gap(px(8.0))
-                                        .child(
-                                            div()
-                                                .text_size(px(14.0))
-                                                .text_color(if selected {
-                                                    d.colors.accent_green
-                                                } else {
-                                                    d.colors.text_primary
-                                                })
-                                                .font_weight(FontWeight::SEMIBOLD)
-                                                .child(truncate_end(&path, 56)),
-                                        )
-                                        .child(
-                                            div()
-                                                .text_size(d.typography.size_xs)
-                                                .text_color(d.colors.text_secondary)
-                                                .child(if project_name.is_empty() {
-                                                    format!("TYPE: {status_label}")
-                                                } else {
-                                                    format!(
-                                                        "TYPE: {status_label} // {project_name}"
-                                                    )
-                                                }),
-                                        ),
-                                )
-                                .child(Self::action_toggle(
-                                    d,
-                                    ElementId::Name(format!("toggle-{index}").into()),
-                                    selected,
-                                    move |_, _, cx| {
-                                        app_toggle
-                                            .update(cx, |app, cx| app.toggle_selection(index, cx));
-                                    },
-                                )),
-                        )
-                        .child(
-                            div()
-                                .flex()
-                                .flex_col()
-                                .gap(px(10.0))
-                                .child(
-                                    div()
-                                        .text_size(d.typography.size_sm)
-                                        .text_color(d.colors.text_secondary)
-                                        .child(utils::format_size(size_bytes)),
-                                )
-                                .child(Self::meter_bar(
-                                    d,
-                                    filled,
-                                    6,
-                                    size_color,
-                                    px(10.0),
-                                    px(12.0),
-                                )),
-                        )
-                } else {
-                    div()
-                        .id(ElementId::Name(format!("inventory-{index}").into()))
-                        .px(px(20.0))
-                        .py(px(16.0))
-                        .flex()
-                        .items_center()
-                        .gap(px(16.0))
-                        .bg(if selected {
-                            Gradients::cta_emphasized(&d.colors)
-                        } else {
-                            Gradients::cta_quiet(&d.colors)
-                        })
-                        .border_l_2()
-                        .border_color(if selected {
-                            d.colors.accent_green
-                        } else {
-                            alpha(d.colors.bg_primary, 0.0)
-                        })
-                        .cursor_pointer()
-                        .hover(|style| style.bg(alpha(d.colors.text_primary, 0.05)))
-                        .on_click(move |_, _, cx| {
-                            app_row.update(cx, |app, cx| app.toggle_selection(index, cx));
-                        })
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .flex()
-                                .flex_col()
-                                .gap(px(8.0))
-                                .child(
-                                    div()
-                                        .text_size(px(14.0))
-                                        .text_color(if selected {
-                                            d.colors.accent_green
-                                        } else {
-                                            d.colors.text_primary
-                                        })
-                                        .font_weight(FontWeight::SEMIBOLD)
-                                        .child(truncate_end(&path, 62)),
-                                )
-                                .child(
-                                    div()
-                                        .text_size(d.typography.size_xs)
-                                        .text_color(d.colors.text_secondary)
-                                        .child(if project_name.is_empty() {
-                                            format!("TYPE: {status_label}")
-                                        } else {
-                                            format!("TYPE: {status_label} // {project_name}")
-                                        }),
-                                ),
-                        )
-                        .child(
-                            div()
-                                .w(px(190.0))
-                                .flex_shrink_0()
-                                .flex()
-                                .items_center()
-                                .gap(px(16.0))
-                                .child(
-                                    div()
-                                        .w(px(72.0))
-                                        .text_size(d.typography.size_sm)
-                                        .text_color(d.colors.text_secondary)
-                                        .child(utils::format_size(size_bytes)),
-                                )
-                                .child(Self::meter_bar(
-                                    d,
-                                    filled,
-                                    6,
-                                    size_color,
-                                    px(8.0),
-                                    px(12.0),
-                                )),
-                        )
-                        .child(Self::action_toggle(
-                            d,
-                            ElementId::Name(format!("toggle-{index}").into()),
-                            selected,
-                            move |_, _, cx| {
-                                app_toggle.update(cx, |app, cx| app.toggle_selection(index, cx));
-                            },
-                        ))
-                };
-
-                rows = rows.child(div().child(Self::separator(d)).child(row_body));
+                let expanded = self.expanded_rows.contains(&index);
+                let row = self.render_inventory_row(d, entry, max_bytes, compact, expanded, cx);
+                rows = rows.child(div().child(Self::separator(d)).child(row));
             }
         }
 
-        div().flex_1().min_h_0().child(rows)
+        div()
+            .flex_1()
+            .min_h_0()
+            .flex()
+            .flex_col()
+            .relative()
+            .child(rows)
+            .child(Self::scroll_overlay(d, &self.inventory_scroll))
+    }
+
+    fn render_inventory_row(
+        &self,
+        d: DesignSystem,
+        entry: &ViewEntry,
+        max_bytes: u64,
+        compact: bool,
+        expanded: bool,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
+        let index = entry.index;
+        let path = entry.path.clone();
+        let project_name = entry.project_name.clone();
+        let size_bytes = entry.size_bytes;
+        let selected = entry.selected;
+        let is_orphaned = entry.is_orphaned;
+        let dir_type = entry.dir_type;
+
+        let filled = scaled_segments_from_max(size_bytes, max_bytes, 6);
+        let size_color = rule_color(d, dir_type.rule.color_hint);
+        let type_label = entry_type_label(dir_type);
+        let status_label = if is_orphaned { "ORPHANED" } else { type_label };
+
+        let path_label = if expanded {
+            path.clone()
+        } else {
+            truncate_end(&path, if compact { 48 } else { 62 })
+        };
+
+        let toggle_index = index;
+        let action = Self::action_toggle(
+            d,
+            ElementId::Name(format!("toggle-{index}").into()),
+            selected,
+            cx.listener(move |this, _, _, cx| {
+                this.app
+                    .update(cx, |app, cx| app.toggle_selection(toggle_index, cx));
+            }),
+        );
+
+        let chevron = div()
+            .w(px(18.0))
+            .h(px(18.0))
+            .flex_shrink_0()
+            .flex()
+            .items_center()
+            .justify_center()
+            .text_size(d.typography.size_sm)
+            .text_color(d.colors.text_tertiary)
+            .child(if expanded { "▾" } else { "▸" }.to_string());
+
+        let path_cell = div()
+            .flex_1()
+            .min_w_0()
+            .flex()
+            .flex_col()
+            .gap(px(4.0))
+            .child(
+                div()
+                    .text_size(d.typography.size_sm)
+                    .text_color(if selected {
+                        d.colors.accent_green
+                    } else {
+                        d.colors.text_primary
+                    })
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(path_label),
+            )
+            .when(expanded || !project_name.is_empty(), |cell| {
+                cell.child(
+                    div()
+                        .text_size(d.typography.size_xs)
+                        .text_color(d.colors.text_secondary)
+                        .child(if project_name.is_empty() {
+                            format!("TYPE: {status_label}")
+                        } else if compact {
+                            format!("TYPE: {status_label} // {project_name}")
+                        } else {
+                            format!("PROJECT: {project_name}")
+                        }),
+                )
+            });
+
+        let primary = if compact {
+            div()
+                .flex()
+                .items_center()
+                .gap(px(12.0))
+                .child(chevron)
+                .child(path_cell)
+                .child(
+                    div()
+                        .w(px(64.0))
+                        .flex_shrink_0()
+                        .text_size(d.typography.size_xs)
+                        .text_color(d.colors.text_secondary)
+                        .child(utils::format_size(size_bytes)),
+                )
+                .child(div().w(px(36.0)).flex_shrink_0().child(action))
+        } else {
+            div()
+                .flex()
+                .items_center()
+                .gap(px(12.0))
+                .child(chevron)
+                .child(path_cell)
+                .child(
+                    div()
+                        .w(px(112.0))
+                        .flex_shrink_0()
+                        .text_size(d.typography.size_xs)
+                        .text_color(d.colors.text_secondary)
+                        .child(status_label.to_string()),
+                )
+                .child(
+                    div()
+                        .w(px(72.0))
+                        .flex_shrink_0()
+                        .text_size(d.typography.size_xs)
+                        .text_color(d.colors.text_secondary)
+                        .child(utils::format_size(size_bytes)),
+                )
+                .child(
+                    div().w(px(96.0)).flex_shrink_0().child(Self::meter_bar(
+                        d,
+                        filled,
+                        6,
+                        size_color,
+                        px(8.0),
+                        px(8.0),
+                    )),
+                )
+                .child(div().w(px(36.0)).flex_shrink_0().child(action))
+        };
+
+        let click_index = index;
+        let mut row = div()
+            .id(ElementId::Name(format!("inventory-{index}").into()))
+            .px(px(8.0))
+            .py(px(10.0))
+            .flex()
+            .flex_col()
+            .gap(px(8.0))
+            .bg(if selected {
+                Gradients::cta_emphasized(&d.colors)
+            } else {
+                Gradients::cta_quiet(&d.colors)
+            })
+            .border_l_2()
+            .border_color(if selected {
+                d.colors.accent_green
+            } else {
+                alpha(d.colors.bg_primary, 0.0)
+            })
+            .cursor_pointer()
+            .hover(|style| style.bg(alpha(d.colors.text_primary, 0.05)))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.toggle_row_expanded(click_index, cx);
+            }))
+            .child(primary);
+
+        if expanded {
+            row = row.child(
+                div()
+                    .pl(px(30.0))
+                    .pr(px(8.0))
+                    .pt(px(2.0))
+                    .pb(px(4.0))
+                    .flex()
+                    .flex_col()
+                    .gap(px(4.0))
+                    .child(
+                        div()
+                            .text_size(d.typography.size_xs)
+                            .text_color(d.colors.text_secondary)
+                            .child(format!("PATH: {}", path)),
+                    )
+                    .child(
+                        div()
+                            .text_size(d.typography.size_xs)
+                            .text_color(d.colors.text_tertiary)
+                            .child(format!(
+                                "STATUS: {} // SIZE: {}",
+                                status_label,
+                                utils::format_size(size_bytes)
+                            )),
+                    ),
+            );
+        }
+
+        row
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2667,11 +3105,34 @@ impl ArtifactView {
     }
 }
 
+fn format_unix_time(ts: i64) -> String {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(ts);
+
+    let delta = now - ts;
+    let when = if delta < 60 {
+        "just now".to_string()
+    } else if delta < 3_600 {
+        format!("{}m ago", delta / 60)
+    } else if delta < 86_400 {
+        format!("{}h ago", delta / 3_600)
+    } else if delta < 604_800 {
+        format!("{}d ago", delta / 86_400)
+    } else {
+        format!("{}w ago", delta / 604_800)
+    };
+
+    format!("RUN @ {} // {}", ts, when)
+}
+
 fn sidebar_icon_name(icon: SidebarIcon) -> &'static str {
     match icon {
         SidebarIcon::Dashboard => "dashboard",
         SidebarIcon::Results => "results",
         SidebarIcon::Browser => "browser",
+        SidebarIcon::History => "history",
         SidebarIcon::Settings => "settings",
     }
 }

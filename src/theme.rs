@@ -241,13 +241,13 @@ pub struct Typography {
 impl Default for Typography {
     fn default() -> Self {
         Self {
-            size_xs: px(10.0),
-            size_sm: px(12.0),
-            size_md: px(13.0),
-            size_lg: px(16.0),
-            size_xl: px(22.0),
-            size_xxl: px(28.0),
-            size_title: px(42.0),
+            size_xs: px(9.0),
+            size_sm: px(11.0),
+            size_md: px(12.0),
+            size_lg: px(14.0),
+            size_xl: px(18.0),
+            size_xxl: px(24.0),
+            size_title: px(34.0),
         }
     }
 }
