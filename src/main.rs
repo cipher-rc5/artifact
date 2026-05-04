@@ -8,6 +8,7 @@ mod app;
 mod view;
 
 use app::ArtifactApp;
+use artifact::config::{MIN_WINDOW_HEIGHT, MIN_WINDOW_WIDTH};
 use artifact::{AppConfig, LoggingConfig};
 use gpui::*;
 use tracing::info;
@@ -97,7 +98,7 @@ fn main() -> anyhow::Result<()> {
                     ..Default::default()
                 }),
                 app_id: Some("com.cipher.artifact".to_string()),
-                window_min_size: Some(size(px(880.0), px(640.0))),
+                window_min_size: Some(size(px(MIN_WINDOW_WIDTH), px(MIN_WINDOW_HEIGHT))),
                 ..Default::default()
             },
             move |window, cx| cx.new(|cx| ArtifactView::new(app_model.clone(), window, cx)),

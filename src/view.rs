@@ -84,6 +84,7 @@ pub struct ArtifactView {
     languages_scroll: ScrollHandle,
     history_cache: Vec<HistoryRun>,
     history_loaded_at: Option<std::time::Instant>,
+    history_error: Option<String>,
 }
 
 impl ArtifactView {
@@ -119,6 +120,7 @@ impl ArtifactView {
             languages_scroll: ScrollHandle::new(),
             history_cache: Vec::new(),
             history_loaded_at: None,
+            history_error: None,
         }
     }
 
@@ -136,8 +138,16 @@ impl ArtifactView {
     }
 
     fn refresh_history(&mut self, cx: &mut Context<Self>) {
-        let runs = self.app.read(cx).load_history(500);
-        self.history_cache = runs;
+        match self.app.read(cx).load_history(500) {
+            Ok(runs) => {
+                self.history_cache = runs;
+                self.history_error = None;
+            }
+            Err(e) => {
+                self.history_cache = Vec::new();
+                self.history_error = Some(e);
+            }
+        }
         self.history_loaded_at = Some(std::time::Instant::now());
     }
 
@@ -180,6 +190,7 @@ impl Render for ArtifactView {
         let error_msg = app.error_message().map(|s| s.to_string());
         let notice = app.notice().cloned();
         let delete_mode = app.delete_mode();
+        let pending_delete = app.pending_delete();
         let enabled_rule_names: Vec<(&'static str, bool)> = rules::RULES
             .iter()
             .map(|r| (r.name, app.is_rule_enabled(r.name)))
@@ -239,6 +250,7 @@ impl Render for ArtifactView {
             .font_family("Menlo")
             .bg(d.colors.bg_primary)
             .text_color(d.colors.text_primary)
+            .relative()
             .flex()
             .flex_row()
             .child(self.render_sidebar(d, active_view, scan_state, item_count > 0, cx))
@@ -280,58 +292,169 @@ impl Render for ArtifactView {
                             .pt(px(14.0))
                             .pb(px(10.0))
                             .child(match active_view {
-                            SidebarView::Dashboard => self.render_dashboard_view(
-                                d,
-                                scan_state,
-                                progress.as_ref(),
-                                &artifact_buckets,
-                                &chart_buckets,
-                                &scan_log,
-                                total_size,
-                                item_count,
-                                selected_count,
-                                viewport_width,
-                                cx,
-                            ),
-                            SidebarView::Results => self.render_results_view(
-                                d,
-                                scan_state,
-                                &view_entries,
-                                total_size,
-                                selected_size,
-                                selected_count,
-                                error_msg.as_deref(),
-                                deleted_count,
-                                delete_mode,
-                                viewport_width,
-                                cx,
-                            ),
-                            SidebarView::Browser => self.render_browser_view(
-                                d,
-                                scan_state,
-                                &scan_path,
-                                &browse_path,
-                                &browse_entries,
-                                file_browser_open,
-                                enabled_language_count,
-                                language_settings.len(),
-                                show_orphaned,
-                                viewport_width,
-                                cx,
-                            ),
-                            SidebarView::History => self.render_history_view(d, cx),
-                            SidebarView::Settings => self.render_settings_view(
-                                d,
-                                &scan_path,
-                                &language_settings,
-                                delete_mode,
-                                viewport_width,
-                                cx,
-                            ),
+                                SidebarView::Dashboard => self.render_dashboard_view(
+                                    d,
+                                    scan_state,
+                                    progress.as_ref(),
+                                    &artifact_buckets,
+                                    &chart_buckets,
+                                    &scan_log,
+                                    total_size,
+                                    item_count,
+                                    selected_count,
+                                    viewport_width,
+                                    cx,
+                                ),
+                                SidebarView::Results => self.render_results_view(
+                                    d,
+                                    scan_state,
+                                    &view_entries,
+                                    total_size,
+                                    selected_size,
+                                    selected_count,
+                                    error_msg.as_deref(),
+                                    deleted_count,
+                                    delete_mode,
+                                    viewport_width,
+                                    cx,
+                                ),
+                                SidebarView::Browser => self.render_browser_view(
+                                    d,
+                                    scan_state,
+                                    &scan_path,
+                                    &browse_path,
+                                    &browse_entries,
+                                    file_browser_open,
+                                    enabled_language_count,
+                                    language_settings.len(),
+                                    show_orphaned,
+                                    viewport_width,
+                                    cx,
+                                ),
+                                SidebarView::History => self.render_history_view(d, cx),
+                                SidebarView::Settings => self.render_settings_view(
+                                    d,
+                                    &scan_path,
+                                    &language_settings,
+                                    delete_mode,
+                                    viewport_width,
+                                    cx,
+                                ),
                             }),
                     )
                     .child(Self::render_footer(d)),
             )
+            .when(pending_delete, {
+                let app_confirm = self.app.clone();
+                let app_cancel = self.app.clone();
+                let mode_label = match delete_mode {
+                    DeleteMode::Trash => "Move To Trash",
+                    DeleteMode::Permanent => "Delete Permanently",
+                };
+                let warning = match delete_mode {
+                    DeleteMode::Trash => "Selected artifacts will be moved to Trash.",
+                    DeleteMode::Permanent => {
+                        "Selected artifacts will be permanently deleted. This cannot be undone."
+                    }
+                };
+                let summary = format!(
+                    "{} director{} — {}",
+                    selected_count,
+                    if selected_count == 1 { "y" } else { "ies" },
+                    utils::format_size(selected_size)
+                );
+                move |this| {
+                    let app_cancel2 = app_cancel.clone();
+                    this.child(
+                        div()
+                            .absolute()
+                            .inset_0()
+                            .bg(gpui::rgba(0x00000099u32))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .on_mouse_down(gpui::MouseButton::Left, move |_, _, cx| {
+                                app_cancel.update(cx, |app, cx| app.cancel_delete_confirm(cx));
+                            })
+                            .child(
+                                div()
+                                    .bg(d.colors.bg_secondary)
+                                    .border_1()
+                                    .border_color(d.colors.border_primary)
+                                    .p(px(28.0))
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(18.0))
+                                    .w(px(420.0))
+                                    .on_mouse_down(gpui::MouseButton::Left, |_, _, _| {})
+                                    .child(
+                                        div()
+                                            .text_size(px(13.0))
+                                            .font_weight(FontWeight::BOLD)
+                                            .text_color(d.colors.text_primary)
+                                            .child(mode_label),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(11.0))
+                                            .text_color(d.colors.text_secondary)
+                                            .child(warning),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(11.0))
+                                            .text_color(d.colors.text_secondary)
+                                            .child(summary),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .gap(px(12.0))
+                                            .child(
+                                                div()
+                                                    .flex_1()
+                                                    .py(px(8.0))
+                                                    .px(px(14.0))
+                                                    .bg(d.colors.accent_green)
+                                                    .text_color(d.colors.bg_primary)
+                                                    .text_size(px(11.0))
+                                                    .font_weight(FontWeight::BOLD)
+                                                    .cursor_pointer()
+                                                    .on_mouse_down(
+                                                        gpui::MouseButton::Left,
+                                                        move |_, _, cx| {
+                                                            app_confirm.update(cx, |app, cx| {
+                                                                app.delete_selected(cx)
+                                                            });
+                                                        },
+                                                    )
+                                                    .child("Confirm"),
+                                            )
+                                            .child(
+                                                div()
+                                                    .flex_1()
+                                                    .py(px(8.0))
+                                                    .px(px(14.0))
+                                                    .border_1()
+                                                    .border_color(d.colors.border_primary)
+                                                    .text_color(d.colors.text_secondary)
+                                                    .text_size(px(11.0))
+                                                    .cursor_pointer()
+                                                    .on_mouse_down(
+                                                        gpui::MouseButton::Left,
+                                                        move |_, _, cx| {
+                                                            app_cancel2.update(cx, |app, cx| {
+                                                                app.cancel_delete_confirm(cx)
+                                                            });
+                                                        },
+                                                    )
+                                                    .child("Cancel"),
+                                            ),
+                                    ),
+                            ),
+                    )
+                }
+            })
     }
 }
 
@@ -545,10 +668,7 @@ impl ArtifactView {
                 format_number(scan_dirs),
                 utils::format_elapsed(scan_elapsed)
             ),
-            _ => format!(
-                "SESSION: {} ARTIFACTS",
-                format_number(artifact_count)
-            ),
+            _ => format!("SESSION: {} ARTIFACTS", format_number(artifact_count)),
         };
 
         let telemetry = div()
@@ -753,12 +873,7 @@ impl ArtifactView {
             .flex()
             .items_center()
             .justify_center()
-            .child(
-                div()
-                    .w(px(8.0))
-                    .h(px(8.0))
-                    .bg(d.colors.accent_green),
-            )
+            .child(div().w(px(8.0)).h(px(8.0)).bg(d.colors.accent_green))
     }
 
     fn render_sidebar_icon(d: DesignSystem, icon: SidebarIcon, active: bool) -> Div {
@@ -899,11 +1014,11 @@ impl ArtifactView {
         let progress_elapsed = progress.map_or(0.0, |p| p.elapsed_secs);
         let progress_path = progress
             .map(|p| truncate_end(&p.current_path, 48))
-            .unwrap_or_else(|| "AWAITING TARGET DIRECTIVE".to_string());
+            .unwrap_or_else(|| "Awaiting Target Directive".to_string());
         let status_label = match scan_state {
-            ScanState::Idle => "SYSTEM_READY",
-            ScanState::Scanning => "SCAN_ACTIVE",
-            ScanState::Complete => "SCAN_COMPLETE",
+            ScanState::Idle => "System_Ready",
+            ScanState::Scanning => "Scan_Active",
+            ScanState::Complete => "Scan_Complete",
         };
         let readiness = match scan_state {
             ScanState::Idle => 0,
@@ -911,9 +1026,9 @@ impl ArtifactView {
             ScanState::Complete => 100,
         };
         let center_button_label = match scan_state {
-            ScanState::Idle => "INITIATE SCAN",
-            ScanState::Scanning => "SCANNING",
-            ScanState::Complete => "RESULTS",
+            ScanState::Idle => "Initiate Scan",
+            ScanState::Scanning => "Scanning",
+            ScanState::Complete => "Results",
         };
         let button_enabled = scan_state != ScanState::Scanning;
         let app_scan = self.app.clone();
@@ -927,8 +1042,8 @@ impl ArtifactView {
             .gap(px(12.0))
             .child(Self::panel(
                 d,
-                "BUILD_ARTIFACTS_FOUND",
-                "H15 // ARCHIVE",
+                "Build_Artifacts_Found",
+                "H15 // Archive",
                 div()
                     .flex_1()
                     .min_h_0()
@@ -943,7 +1058,7 @@ impl ArtifactView {
                             div()
                                 .text_size(d.typography.size_sm)
                                 .text_color(d.colors.text_tertiary)
-                                .child("NO ARTIFACT CLUSTERS DETECTED"),
+                                .child("No Artifact Clusters Detected"),
                         ]
                     } else {
                         artifact_buckets
@@ -988,8 +1103,8 @@ impl ArtifactView {
             ))
             .child(Self::panel(
                 d,
-                "SAVINGS_ANALYSIS",
-                "H16 // DISK",
+                "Savings_Analysis",
+                "H16 // Disk",
                 div()
                     .flex_1()
                     .min_h_0()
@@ -1019,7 +1134,7 @@ impl ArtifactView {
                                 div()
                                     .text_size(d.typography.size_xs)
                                     .text_color(d.colors.text_secondary)
-                                    .child("TOTAL RECOVERABLE SPACE"),
+                                    .child("Total Recoverable Space"),
                             ),
                     ),
             ));
@@ -1052,7 +1167,7 @@ impl ArtifactView {
                     .gap(px(24.0))
                     .child(Self::status_callout(
                         d,
-                        "STATUS",
+                        "Status",
                         status_label,
                         match scan_state {
                             ScanState::Idle => d.colors.text_secondary,
@@ -1062,8 +1177,8 @@ impl ArtifactView {
                     ))
                     .child(Self::status_callout(
                         d,
-                        "ARTIFACTS",
-                        &format!("{} FOUND", format_number(progress_items)),
+                        "Artifacts",
+                        &format!("{} Found", format_number(progress_items)),
                         d.colors.text_primary,
                     )),
             )
@@ -1094,7 +1209,7 @@ impl ArtifactView {
                         div()
                             .text_size(d.typography.size_xs)
                             .text_color(d.colors.text_tertiary)
-                            .child("CMD: ARTIFACT.EXE --FULL-SCAN"),
+                            .child("CMD: artifact.exe --full-scan"),
                     )
                     .child(
                         div()
@@ -1124,8 +1239,8 @@ impl ArtifactView {
             .gap(px(12.0))
             .child(Self::panel(
                 d,
-                "SESSION_METRICS",
-                "REAL // DATA",
+                "Session_Metrics",
+                "real // data",
                 div()
                     .flex_shrink_0()
                     .px(px(16.0))
@@ -1135,21 +1250,21 @@ impl ArtifactView {
                     .gap(px(12.0))
                     .child(Self::health_metric(
                         d,
-                        "ARTIFACTS",
+                        "Artifacts",
                         &format_number(item_count),
                         d.colors.accent_green,
                         item_count.div_ceil(50).clamp(0, 7),
                     ))
                     .child(Self::health_metric(
                         d,
-                        "SELECTED",
+                        "selected",
                         &format!("{selected_count} / {selection_pct}%"),
                         d.colors.accent_yellow,
                         selected_segments,
                     ))
                     .child(Self::health_metric(
                         d,
-                        "TOTAL_SIZE",
+                        "total_size",
                         &recoverable_total,
                         d.colors.accent_blue,
                         if total_size == 0 { 0 } else { 4 },
@@ -1157,8 +1272,8 @@ impl ArtifactView {
             ))
             .child(Self::panel(
                 d,
-                "ACTIVITY_LOG",
-                "LIVE",
+                "Activity_Log",
+                "live",
                 self.render_activity_log(d, scan_log),
             ));
 
@@ -1207,14 +1322,14 @@ impl ArtifactView {
             .max()
             .unwrap_or(1);
         let scan_state_text = match scan_state {
-            ScanState::Idle => "IDLE",
-            ScanState::Scanning => "SCANNING",
-            ScanState::Complete => "READY",
+            ScanState::Idle => "Idle",
+            ScanState::Scanning => "Scanning",
+            ScanState::Complete => "Ready",
         };
 
         let inventory_panel = Self::panel(
             d,
-            "ARTIFACT_INVENTORY",
+            "Artifact_Inventory",
             &format!("{} ITEMS", format_number(entries.len())),
             div()
                 .flex()
@@ -1231,8 +1346,8 @@ impl ArtifactView {
 
         let summary_panel = Self::panel(
             d,
-            "PURGE_PARAMETER_V2",
-            "ACTION",
+            "Purge_Parameter_v2",
+            "Action",
             Self::results_sidebar(
                 d,
                 total_size,
@@ -1289,8 +1404,8 @@ impl ArtifactView {
 
         let browser_panel = Self::panel(
             d,
-            "SELECT_SCAN_ROOT",
-            "BROWSER // FS",
+            "Select_Scan_Root",
+            "Browser // FS",
             if file_browser_open {
                 self.render_browser_list(d, browse_path, browse_entries, cx)
             } else {
@@ -1307,18 +1422,18 @@ impl ArtifactView {
                             .text_size(px(20.0))
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(d.colors.text_primary)
-                            .child("DIRECTORY BROWSER OFFLINE"),
+                            .child("Directory Browser Offline"),
                     )
                     .child(
                         div()
                             .text_size(d.typography.size_sm)
                             .text_color(d.colors.text_secondary)
-                            .child("OPEN THE FILE BROWSER TO CHANGE THE SCAN ROOT."),
+                            .child("Open The File Browser To Change THE SCAN ROOT."),
                     )
                     .child(Self::terminal_button(
                         d,
                         "browser-open",
-                        "OPEN BROWSER",
+                        "Open Browser",
                         true,
                         false,
                         cx.listener(|this, _, _, cx| {
@@ -1330,8 +1445,8 @@ impl ArtifactView {
 
         let control_panel = Self::panel(
             d,
-            "SCAN_PARAMETERS",
-            "P-V2 // CONTROL",
+            "Scan_Parameters",
+            "P-V2 // Control",
             div()
                 .px(px(18.0))
                 .pb(px(18.0))
@@ -1340,32 +1455,32 @@ impl ArtifactView {
                 .gap(px(16.0))
                 .child(Self::results_metric_line(
                     d,
-                    "SCAN_ROOT",
+                    "Scan_Root",
                     &truncate_end(scan_path, if compact { 28 } else { 32 }),
                 ))
                 .child(Self::results_metric_line(
                     d,
-                    "BROWSE_PATH",
+                    "Browse_Path",
                     &truncate_end(browse_path, if compact { 28 } else { 32 }),
                 ))
                 .child(Self::results_metric_line(
                     d,
-                    "LANGUAGES_ENABLED",
+                    "Languages_Enabled",
                     &format!("{} / {}", enabled_language_count, total_languages),
                 ))
                 .child(Self::results_metric_line(
                     d,
-                    "SCAN_STATE",
+                    "Scan_State",
                     match scan_state {
-                        ScanState::Idle => "IDLE",
-                        ScanState::Scanning => "SCANNING",
-                        ScanState::Complete => "COMPLETE",
+                        ScanState::Idle => "Idle",
+                        ScanState::Scanning => "Scanning",
+                        ScanState::Complete => "Complete",
                     },
                 ))
                 .child(Self::separator(d))
                 .child(Self::toggle_row(
                     d,
-                    "ORPHANED_ONLY",
+                    "Orphaned_Only",
                     show_orphaned,
                     move |_, _, cx| {
                         app_orphan.update(cx, |app, cx| app.toggle_orphaned_only(cx));
@@ -1381,7 +1496,7 @@ impl ArtifactView {
                         .child(Self::terminal_button(
                             d,
                             "browser-settings",
-                            "SETTINGS",
+                            "Settings",
                             true,
                             false,
                             cx.listener(|this, _, _, cx| {
@@ -1391,7 +1506,7 @@ impl ArtifactView {
                         .child(Self::terminal_button(
                             d,
                             "browser-scan",
-                            "RUN SCAN",
+                            "Run Scan",
                             scan_state != ScanState::Scanning,
                             true,
                             move |_, _, cx| {
@@ -1401,7 +1516,7 @@ impl ArtifactView {
                         .child(Self::terminal_button(
                             d,
                             "browser-return",
-                            "RETURN",
+                            "Return",
                             true,
                             false,
                             cx.listener(|this, _, _, cx| {
@@ -1460,7 +1575,7 @@ impl ArtifactView {
                     .py(px(12.0))
                     .text_size(d.typography.size_sm)
                     .text_color(d.colors.text_tertiary)
-                    .child("NO SUBDIRECTORIES AVAILABLE"),
+                    .child("No Subdirectories Available"),
             );
         } else {
             for (name, path) in entries {
@@ -1540,7 +1655,7 @@ impl ArtifactView {
                     .child(Self::terminal_button(
                         d,
                         "browse-cancel",
-                        "CANCEL",
+                        "Cancel",
                         true,
                         false,
                         cx.listener(move |this, _, _, cx| {
@@ -1551,7 +1666,7 @@ impl ArtifactView {
                     .child(Self::terminal_button(
                         d,
                         "browse-select",
-                        "SELECT",
+                        "Select",
                         true,
                         true,
                         cx.listener(move |this, _, _, cx| {
@@ -1575,15 +1690,15 @@ impl ArtifactView {
 
         let languages_panel = Self::panel(
             d,
-            "SCAN_LANGUAGES",
-            "FILTERS // RULESET",
+            "Scan_Languages",
+            "Filters // Ruleset",
             self.language_settings_list(d, language_settings),
         );
 
         let actions_panel = Self::panel(
             d,
-            "DELETE_BEHAVIOR",
-            "SAFETY // ACTION",
+            "Delete_Behavior",
+            "Safety // Action",
             div()
                 .px(px(18.0))
                 .pb(px(18.0))
@@ -1592,7 +1707,7 @@ impl ArtifactView {
                 .gap(px(16.0))
                 .child(Self::results_metric_line(
                     d,
-                    "SCAN_ROOT",
+                    "Scan_Root",
                     &truncate_end(scan_path, if compact { 28 } else { 34 }),
                 ))
                 .child(Self::separator(d))
@@ -1600,7 +1715,7 @@ impl ArtifactView {
                     d,
                     DeleteMode::Trash,
                     delete_mode == DeleteMode::Trash,
-                    "MOVE TO TRASH",
+                    "Move To Trash",
                     "Safer default. Files stay recoverable from the system trash.",
                     self.app.clone(),
                 ))
@@ -1608,7 +1723,7 @@ impl ArtifactView {
                     d,
                     DeleteMode::Permanent,
                     delete_mode == DeleteMode::Permanent,
-                    "DELETE PERMANENTLY",
+                    "Delete Permanently",
                     "Immediately removes artifacts from disk with no trash fallback.",
                     self.app.clone(),
                 ))
@@ -1622,7 +1737,7 @@ impl ArtifactView {
                         .child(Self::terminal_button(
                             d,
                             "settings-root",
-                            "CHANGE SCAN ROOT",
+                            "Change Scan Root",
                             true,
                             false,
                             cx.listener(|this, _, _, cx| {
@@ -1632,7 +1747,7 @@ impl ArtifactView {
                         .child(Self::terminal_button(
                             d,
                             "settings-dashboard",
-                            "BACK TO DASHBOARD",
+                            "Back To Dashboard",
                             true,
                             false,
                             cx.listener(|this, _, _, cx| {
@@ -1664,6 +1779,7 @@ impl ArtifactView {
     }
 
     fn render_history_view(&self, d: DesignSystem, cx: &mut Context<Self>) -> Div {
+        let history_error = self.history_error.clone();
         let runs = self.history_cache.clone();
         let total_runs = runs.len();
         let total_records: usize = runs.iter().map(|r| r.entries.len()).sum();
@@ -1671,15 +1787,15 @@ impl ArtifactView {
 
         let list_panel = Self::panel(
             d,
-            "CLEANUP_HISTORY",
-            &format!("{} RUNS", format_number(total_runs)),
+            "Cleanup_History",
+            &format!("{} Runs", format_number(total_runs)),
             self.render_history_list(d, &runs, cx),
         );
 
         let summary_panel = Self::panel(
             d,
-            "HISTORY_SUMMARY",
-            "AGGREGATE",
+            "History_Summary",
+            "Aggregate",
             div()
                 .flex()
                 .flex_col()
@@ -1689,26 +1805,26 @@ impl ArtifactView {
                 .gap(px(14.0))
                 .child(Self::results_metric_line(
                     d,
-                    "TOTAL_RUNS",
+                    "Total_Runs",
                     &format_number(total_runs),
                 ))
                 .child(Self::separator(d))
                 .child(Self::results_metric_line(
                     d,
-                    "TOTAL_DELETIONS",
+                    "Total_Deletions",
                     &format_number(total_records),
                 ))
                 .child(Self::separator(d))
                 .child(Self::results_metric_line(
                     d,
-                    "SPACE_RECLAIMED",
+                    "Space_Reclaimed",
                     &utils::format_size(total_bytes.max(0) as u64),
                 ))
                 .child(Self::separator(d))
                 .child(Self::terminal_button(
                     d,
                     "history-refresh",
-                    "REFRESH",
+                    "Refresh",
                     true,
                     false,
                     cx.listener(|this, _, _, cx| {
@@ -1720,12 +1836,33 @@ impl ArtifactView {
 
         div()
             .flex()
-            .flex_row()
+            .flex_col()
             .flex_1()
             .min_h_0()
             .gap(px(12.0))
-            .child(list_panel)
-            .child(div().w(px(280.0)).flex_shrink_0().child(summary_panel))
+            .when(history_error.is_some(), |this| {
+                this.child(
+                    div()
+                        .px(px(14.0))
+                        .py(px(8.0))
+                        .text_size(d.typography.size_xs)
+                        .text_color(d.colors.accent_red)
+                        .child(format!(
+                            "History Unavailable: {}",
+                            history_error.unwrap_or_default()
+                        )),
+                )
+            })
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .flex_1()
+                    .min_h_0()
+                    .gap(px(12.0))
+                    .child(list_panel)
+                    .child(div().w(px(280.0)).flex_shrink_0().child(summary_panel)),
+            )
     }
 
     fn render_history_list(
@@ -1754,7 +1891,7 @@ impl ArtifactView {
                     .py(px(16.0))
                     .text_size(d.typography.size_sm)
                     .text_color(d.colors.text_tertiary)
-                    .child("NO PRIOR CLEANUP RUNS RECORDED"),
+                    .child("No Prior Cleanup Runs Recorded"),
             );
         } else {
             for run in runs {
@@ -1846,9 +1983,7 @@ impl ArtifactView {
                                         .flex_shrink_0()
                                         .text_size(d.typography.size_xs)
                                         .text_color(d.colors.text_tertiary)
-                                        .child(utils::format_size(
-                                            entry.size_bytes.max(0) as u64,
-                                        )),
+                                        .child(utils::format_size(entry.size_bytes.max(0) as u64)),
                                 )
                                 .child(
                                     div()
@@ -2127,12 +2262,7 @@ impl ArtifactView {
                             .items_center()
                             .gap(px(8.0))
                             .pr(px(12.0))
-                            .child(
-                                div()
-                                    .w(px(6.0))
-                                    .h(px(6.0))
-                                    .bg(d.colors.accent_green),
-                            )
+                            .child(div().w(px(6.0)).h(px(6.0)).bg(d.colors.accent_green))
                             .child(Self::panel_label(d, title)),
                     )
                     .child(
@@ -2180,14 +2310,11 @@ impl ArtifactView {
             .gap(px(3.0))
             .children((0..total).map(|index| {
                 if index < filled {
-                    div()
-                        .w(segment_width)
-                        .h(segment_height)
-                        .bg(linear_gradient(
-                            90.0,
-                            linear_color_stop(alpha(color, 0.95), 0.0),
-                            linear_color_stop(alpha(color, 0.55), 1.0),
-                        ))
+                    div().w(segment_width).h(segment_height).bg(linear_gradient(
+                        90.0,
+                        linear_color_stop(alpha(color, 0.95), 0.0),
+                        linear_color_stop(alpha(color, 0.55), 1.0),
+                    ))
                 } else {
                     div()
                         .w(segment_width)
@@ -2326,7 +2453,7 @@ impl ArtifactView {
                                             .text_size(d.typography.size_xs)
                                             .text_color(d.colors.text_tertiary)
                                             .child(format!(
-                                                "SECTOR 4F / BLOCK {}",
+                                                "Sector 4F / BLOCK {}",
                                                 (item_count.max(12) % 89) + 10
                                             )),
                                     ),
@@ -2417,7 +2544,7 @@ impl ArtifactView {
                 div()
                     .text_size(d.typography.size_sm)
                     .text_color(d.colors.text_tertiary)
-                    .child("NO ACTIVITY RECORDED"),
+                    .child("No Activity Recorded"),
             );
         } else {
             for (index, path) in scan_log.iter().enumerate() {
@@ -2514,7 +2641,7 @@ impl ArtifactView {
                     .py(px(20.0))
                     .text_size(d.typography.size_sm)
                     .text_color(d.colors.text_tertiary)
-                    .child("NO ARTIFACTS AVAILABLE. RUN A SCAN FROM THE DASHBOARD OR BROWSER."),
+                    .child("No artifacts available. Run a scan from the dashboard or browser."),
             );
         } else {
             for entry in entries {
@@ -2555,7 +2682,7 @@ impl ArtifactView {
         let filled = scaled_segments_from_max(size_bytes, max_bytes, 6);
         let size_color = rule_color(d, dir_type.rule.color_hint);
         let type_label = entry_type_label(dir_type);
-        let status_label = if is_orphaned { "ORPHANED" } else { type_label };
+        let status_label = if is_orphaned { "Orphaned" } else { type_label };
 
         let path_label = if expanded {
             path.clone()
@@ -2656,16 +2783,14 @@ impl ArtifactView {
                         .text_color(d.colors.text_secondary)
                         .child(utils::format_size(size_bytes)),
                 )
-                .child(
-                    div().w(px(96.0)).flex_shrink_0().child(Self::meter_bar(
-                        d,
-                        filled,
-                        6,
-                        size_color,
-                        px(8.0),
-                        px(8.0),
-                    )),
-                )
+                .child(div().w(px(96.0)).flex_shrink_0().child(Self::meter_bar(
+                    d,
+                    filled,
+                    6,
+                    size_color,
+                    px(8.0),
+                    px(8.0),
+                )))
                 .child(div().w(px(36.0)).flex_shrink_0().child(action))
         };
 
@@ -2743,8 +2868,8 @@ impl ArtifactView {
         let action_enabled = selected_size > 0;
         let app_delete = app.clone();
         let action_label = match delete_mode {
-            DeleteMode::Trash => "MOVE TO TRASH",
-            DeleteMode::Permanent => "DELETE PERMANENTLY",
+            DeleteMode::Trash => "Move To Trash",
+            DeleteMode::Permanent => "Delete Permanently",
         };
         let safety_copy = match delete_mode {
             DeleteMode::Trash => {
@@ -2787,12 +2912,7 @@ impl ArtifactView {
                             .flex()
                             .items_center()
                             .gap(px(8.0))
-                            .child(
-                                div()
-                                    .w(px(6.0))
-                                    .h(px(6.0))
-                                    .bg(d.colors.accent_green),
-                            )
+                            .child(div().w(px(6.0)).h(px(6.0)).bg(d.colors.accent_green))
                             .child(
                                 div()
                                     .text_size(d.typography.size_xs)
@@ -2929,7 +3049,7 @@ impl ArtifactView {
                         action_enabled,
                         true,
                         move |_, _, cx| {
-                            app_delete.update(cx, |app, cx| app.delete_selected(cx));
+                            app_delete.update(cx, |app, cx| app.request_delete_confirm(cx));
                         },
                     )),
             )

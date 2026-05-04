@@ -5,6 +5,11 @@
 
 set shell := ["bash", "-cu"]
 
+# Pinned tool versions (tested against):
+#   zig       0.14.0   (brew install zig; verify with `zig version`)
+#   cargo-zigbuild  0.19.8   (cargo install cargo-zigbuild --version 0.19.8 --locked)
+#   just      1.40.0   (brew install just; verify with `just --version`)
+
 bin := "artifact"
 dist := "target/dist"
 
@@ -83,3 +88,9 @@ package: build-all
 clean:
     cargo clean
     rm -rf {{dist}}
+
+# Verify that required distribution build tools are present.
+verify-tools:
+    @zig version
+    @cargo zigbuild --version
+    @just --version

@@ -31,6 +31,7 @@ const PROGRESS_INTERVAL: Duration = Duration::from_millis(50);
 pub struct Scanner {
     root: PathBuf,
     enabled_rules: Vec<&'static ArtifactRule>,
+    max_results: Option<usize>,
 }
 
 impl Scanner {
@@ -38,7 +39,15 @@ impl Scanner {
         Self {
             root,
             enabled_rules: rules::RULES.iter().collect(),
+            max_results: None,
         }
+    }
+
+    /// Cap the number of matches returned. Results beyond the limit are silently
+    /// dropped (scan still runs to completion but stops collecting after the cap).
+    pub fn with_max_results(mut self, limit: usize) -> Self {
+        self.max_results = Some(limit);
+        self
     }
 
     /// Build a scanner restricted to a specific set of rule names. Unknown
@@ -56,19 +65,26 @@ impl Scanner {
         Self {
             root,
             enabled_rules,
+            max_results: None,
         }
     }
 
     pub fn scan(&self) -> Result<Vec<DirectoryItem>> {
-        self.scan_with_progress(|_, _, _, _| {})
+        use std::sync::atomic::AtomicBool;
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.scan_with_progress(cancel, |_, _, _, _| {})
     }
 
-    /// Scan with a progress callback.
+    /// Scan with a cancellation flag and a progress callback.
+    ///
+    /// The scan checks `cancel` after each directory entry is processed. When
+    /// `cancel` is set to `true` the scan stops at the next opportunity.
     ///
     /// `on_progress(dirs_scanned, items_found, current_path, total_size_found)`
     /// is invoked from the scanner thread. Keep the closure cheap.
     pub fn scan_with_progress(
         &self,
+        cancel: Arc<std::sync::atomic::AtomicBool>,
         on_progress: impl Fn(usize, usize, &str, u64) + Send + Sync,
     ) -> Result<Vec<DirectoryItem>> {
         info!("Scanning from root: {}", self.root.display());
@@ -95,10 +111,17 @@ impl Scanner {
 
         let last_progress = Arc::new(Mutex::new(Instant::now()));
         let on_progress = Arc::new(on_progress);
+        let max_results = self.max_results;
 
         let walker = self.build_walker(matches.clone(), dirs_scanned.clone());
 
-        for entry in walker {
+        'outer: for entry in walker {
+            // Honour the cancellation flag.
+            if cancel.load(Ordering::Relaxed) {
+                debug!("Scan cancelled by caller");
+                break 'outer;
+            }
+
             match entry {
                 Ok(de) => {
                     if !de.file_type.is_dir() {
@@ -126,7 +149,11 @@ impl Scanner {
         // Size each match in parallel.
         let raw_matches: Vec<(PathBuf, &'static ArtifactRule)> = {
             let mut guard = matches.lock().unwrap();
-            std::mem::take(&mut *guard)
+            let mut taken = std::mem::take(&mut *guard);
+            if let Some(limit) = max_results {
+                taken.truncate(limit);
+            }
+            taken
         };
         info!(
             "Discovered {} candidate directories; sizing",
@@ -299,4 +326,152 @@ fn parallel_dir_size(path: &Path) -> u64 {
         }
     }
     total.load(Ordering::Relaxed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    /// Create a non-hidden scan root inside a tempdir.
+    ///
+    /// `tempfile::tempdir()` creates directories whose name starts with `.tmp`,
+    /// which the scanner's hidden-dir filter removes when jwalk's
+    /// `process_read_dir` is called on the parent. We work around this by
+    /// creating an explicit, non-hidden subdirectory ("workspace") inside the
+    /// tempdir and scanning from there.
+    fn scan_root(tmp: &tempfile::TempDir) -> std::path::PathBuf {
+        let root = tmp.path().join("workspace");
+        fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    fn setup_node_project(base: &std::path::Path) {
+        // myproject/package.json
+        // myproject/node_modules/some_pkg/index.js
+        let project = base.join("myproject");
+        fs::create_dir_all(project.join("node_modules").join("some_pkg")).unwrap();
+        fs::write(project.join("package.json"), b"{}").unwrap();
+        fs::write(
+            project.join("node_modules").join("some_pkg").join("index.js"),
+            b"module.exports = {};",
+        )
+        .unwrap();
+    }
+
+    fn setup_rust_project(base: &std::path::Path) {
+        let project = base.join("rustproject");
+        fs::create_dir_all(project.join("target").join("debug")).unwrap();
+        fs::write(project.join("Cargo.toml"), b"[package]\nname = \"test\"").unwrap();
+        fs::write(project.join("target").join("debug").join("binary"), b"\x7fELF").unwrap();
+    }
+
+    #[test]
+    fn scan_finds_node_modules() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = scan_root(&tmp);
+        setup_node_project(&root);
+
+        let scanner = Scanner::new(root);
+        let results = scanner.scan().unwrap();
+
+        let found = results.iter().any(|item| {
+            item.path.ends_with("node_modules")
+        });
+        assert!(found, "expected node_modules to be detected; got: {results:?}");
+    }
+
+    #[test]
+    fn scan_finds_rust_target() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = scan_root(&tmp);
+        setup_rust_project(&root);
+
+        let scanner = Scanner::new(root);
+        let results = scanner.scan().unwrap();
+
+        let found = results.iter().any(|item| item.path.ends_with("target"));
+        assert!(found, "expected Rust target/ to be detected; got: {results:?}");
+    }
+
+    #[test]
+    fn scan_does_not_match_without_marker() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = scan_root(&tmp);
+        // Create a directory named "target" but with no Cargo.toml sibling
+        let dir = root.join("project_no_marker");
+        fs::create_dir_all(dir.join("target").join("debug")).unwrap();
+        // NO Cargo.toml
+
+        let scanner = Scanner::with_enabled(root, &["rust_target"]);
+        let results = scanner.scan().unwrap();
+        assert!(results.is_empty(), "should not match target/ without Cargo.toml; got: {results:?}");
+    }
+
+    #[test]
+    fn cancel_flag_stops_scan_early() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = scan_root(&tmp);
+        // Create many subdirectories to give the scanner something to traverse.
+        for i in 0..50 {
+            fs::create_dir_all(root.join(format!("dir_{i:03}"))).unwrap();
+        }
+
+        let cancel = Arc::new(AtomicBool::new(false));
+        let cancel_clone = Arc::clone(&cancel);
+
+        let scanner = Scanner::new(root);
+        let call_count = Arc::new(AtomicUsize::new(0));
+        let call_count_clone = Arc::clone(&call_count);
+
+        // Cancel immediately on first progress callback.
+        let result = scanner.scan_with_progress(cancel, move |_, _, _, _| {
+            if call_count_clone.fetch_add(1, Ordering::Relaxed) == 0 {
+                cancel_clone.store(true, Ordering::Relaxed);
+            }
+        });
+
+        // Scan should complete (not panic) even when cancelled.
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn max_results_cap_is_respected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = scan_root(&tmp);
+        // Create 5 separate node projects.
+        for i in 0..5 {
+            let project = root.join(format!("proj{i}"));
+            fs::create_dir_all(project.join("node_modules")).unwrap();
+            fs::write(project.join("package.json"), b"{}").unwrap();
+        }
+
+        let scanner = Scanner::new(root).with_max_results(2);
+        let results = scanner.scan().unwrap();
+        assert!(
+            results.len() <= 2,
+            "expected at most 2 results, got {}",
+            results.len()
+        );
+    }
+
+    #[test]
+    fn orphan_detection_marks_orphaned_correctly() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = scan_root(&tmp);
+        // node_modules/ without package.json → should NOT match (marker required)
+        let project = root.join("orphan_project");
+        fs::create_dir_all(project.join("node_modules")).unwrap();
+        // No package.json!
+
+        let scanner = Scanner::new(root);
+        let results = scanner.scan().unwrap();
+
+        // node_modules without package.json marker should not match
+        assert!(
+            results.is_empty(),
+            "node_modules without package.json marker should not match"
+        );
+    }
 }

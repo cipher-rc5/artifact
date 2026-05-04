@@ -177,3 +177,39 @@ where
     }
     None
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    #[test]
+    fn rule_names_are_unique() {
+        let names: Vec<_> = RULES.iter().map(|r| r.name).collect();
+        let unique: HashSet<_> = names.iter().collect();
+        assert_eq!(names.len(), unique.len(), "duplicate rule names found");
+    }
+
+    #[test]
+    fn node_modules_rule_exists() {
+        let rule = find("node_modules").expect("node_modules rule missing");
+        assert_eq!(rule.dir_name, "node_modules");
+        assert!(rule.markers.contains(&"package.json"));
+    }
+
+    #[test]
+    fn rust_target_rule_exists() {
+        let rule = find("rust_target").expect("rust_target rule missing");
+        assert_eq!(rule.dir_name, "target");
+        assert!(rule.markers.contains(&"Cargo.toml"));
+    }
+
+    #[test]
+    fn all_rules_have_nonempty_name_and_dir() {
+        for rule in RULES {
+            assert!(!rule.name.is_empty(), "rule has empty name");
+            assert!(!rule.dir_name.is_empty(), "rule {} has empty dir_name", rule.name);
+            assert!(!rule.language.is_empty(), "rule {} has empty language", rule.name);
+        }
+    }
+}

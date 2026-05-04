@@ -5,7 +5,7 @@ edition = "2024"
 license = "MIT"
 readme = "README.md"
 repository = "https://github.com/cipher-rc5/artifact"
-rust-version = "1.94"
+rust-version = "1.95"
 description = "GPUI-based desktop app for finding and reclaiming disk space."
 
 [dependencies]
@@ -45,6 +45,9 @@ lto = "thin" # Cross-crate inlining; meaningful size + speed win.
 codegen-units = 1 # Maximize optimization at the cost of build time.
 strip = "symbols" # Drop debug symbols from the binary.
 panic = "abort" # No unwinding tables — smaller binary; we don't catch_unwind.
+
+[dev-dependencies]
+tempfile = "3"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6" # Objective-C runtime bridge for dock icon setup.

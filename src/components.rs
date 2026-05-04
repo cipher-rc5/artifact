@@ -394,6 +394,24 @@ impl ProgressBar {
                     .bg(d.colors.accent_green),
             )
     }
+
+    pub fn render_progress(&self, progress: f32) -> Div {
+        let d = self.design;
+        let filled = progress.clamp(0.0, 1.0);
+        div()
+            .w_full()
+            .h(px(6.0))
+            .rounded_full()
+            .bg(d.colors.bg_tertiary)
+            .overflow_hidden()
+            .child(
+                div()
+                    .h_full()
+                    .rounded_full()
+                    .bg(d.colors.accent_green)
+                    .w(relative(filled)),
+            )
+    }
 }
 
 // ---------------------------------------------------------------------------

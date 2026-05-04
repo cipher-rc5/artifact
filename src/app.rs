@@ -7,6 +7,7 @@ use parking_lot::Mutex;
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, channel};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -99,6 +100,7 @@ pub struct ArtifactApp {
     scan_state: ScanState,
     scan_progress_data: Option<ScanProgress>,
     scan_receiver: Option<Arc<Mutex<Receiver<ScanMessage>>>>,
+    scan_cancel: Option<Arc<AtomicBool>>,
 
     // Directory state
     directories: Vec<DirectoryItem>,
@@ -113,6 +115,7 @@ pub struct ArtifactApp {
     error_message: Option<String>,
     notice: Option<StatusNotice>,
     notice_set_at: Option<Instant>,
+    pending_delete: bool,
 
     // Database
     database: Option<Arc<DeletionDatabase>>,
@@ -178,24 +181,33 @@ impl ArtifactApp {
         self.scan_progress_data.as_ref().map(|p| p.elapsed_secs)
     }
 
+    pub fn pending_delete(&self) -> bool {
+        self.pending_delete
+    }
+
+    #[allow(dead_code)]
+    pub fn is_scan_cancellable(&self) -> bool {
+        self.scan_cancel.is_some()
+    }
+
     pub fn directories_scanned(&self) -> Option<usize> {
         self.scan_progress_data
             .as_ref()
             .map(|p| p.directories_scanned)
     }
 
-    pub fn load_history(&self, limit: usize) -> Vec<HistoryRun> {
+    pub fn load_history(&self, limit: usize) -> Result<Vec<HistoryRun>, String> {
         let Some(db) = self.database.as_ref() else {
-            return Vec::new();
+            return Ok(Vec::new());
         };
 
         let records = match db.get_recent_deletions(limit.max(1)) {
             Ok(r) => r,
-            Err(_) => return Vec::new(),
+            Err(e) => return Err(e.to_string()),
         };
 
         if records.is_empty() {
-            return Vec::new();
+            return Ok(Vec::new());
         }
 
         // Group records that fall within the same run window. We treat any pair
@@ -232,7 +244,7 @@ impl ArtifactApp {
             }
         }
 
-        runs
+        Ok(runs)
     }
 }
 
@@ -295,6 +307,7 @@ impl ArtifactApp {
         let home_path = PathBuf::from(&home);
 
         let enabled_rules = enabled_rules_from_config(&config);
+        let show_orphaned_only = config.scan.show_orphaned_only;
 
         cx.new(|_cx| Self {
             config,
@@ -303,14 +316,16 @@ impl ArtifactApp {
             scan_state: ScanState::Idle,
             scan_progress_data: None,
             scan_receiver: None,
+            scan_cancel: None,
             directories: Vec::new(),
             total_size: 0,
             selected_size: 0,
-            show_orphaned_only: false,
+            show_orphaned_only,
             deleted_count: 0,
             error_message: None,
             notice: None,
             notice_set_at: None,
+            pending_delete: false,
             database,
             show_file_browser: false,
             browse_path: home_path,
@@ -323,6 +338,10 @@ impl ArtifactApp {
 
     pub fn toggle_orphaned_only(&mut self, cx: &mut Context<Self>) {
         self.show_orphaned_only = !self.show_orphaned_only;
+        self.config.scan.show_orphaned_only = self.show_orphaned_only;
+        if let Err(e) = self.config.save() {
+            warn!("Failed to persist orphaned filter preference: {}", e);
+        }
         cx.notify();
     }
 
@@ -371,19 +390,30 @@ impl ArtifactApp {
         let enabled_rules: Vec<String> = self.enabled_rules.iter().cloned().collect();
         let start_time = Instant::now();
 
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.scan_cancel = Some(Arc::clone(&cancel));
+        let cancel_for_cb = Arc::clone(&cancel);
+
         thread::spawn(move || {
             let scanner = Scanner::with_enabled(PathBuf::from(&scan_path), enabled_rules);
+            let tx_cb = tx.clone();
 
             match scanner.scan_with_progress(
-                |dirs_scanned, items_found, current_path, total_size| {
+                cancel,
+                move |dirs_scanned, items_found, current_path: &str, total_size| {
                     let elapsed = start_time.elapsed().as_secs_f64();
-                    let _ = tx.send(ScanMessage::Progress(ScanProgress {
-                        directories_scanned: dirs_scanned,
-                        items_found,
-                        current_path: current_path.to_string(),
-                        total_size_found: total_size,
-                        elapsed_secs: elapsed,
-                    }));
+                    if tx_cb
+                        .send(ScanMessage::Progress(ScanProgress {
+                            directories_scanned: dirs_scanned,
+                            items_found,
+                            current_path: current_path.to_string(),
+                            total_size_found: total_size,
+                            elapsed_secs: elapsed,
+                        }))
+                        .is_err()
+                    {
+                        cancel_for_cb.store(true, Ordering::Relaxed);
+                    }
                 },
             ) {
                 Ok(results) => {
@@ -426,6 +456,7 @@ impl ArtifactApp {
                     cx.notify();
                 }
                 ScanMessage::Complete(dirs) => {
+                    self.scan_cancel = None;
                     self.directories = dirs;
                     self.total_size = self.directories.iter().map(|d| d.size_bytes).sum();
                     self.scan_state = ScanState::Complete;
@@ -443,6 +474,7 @@ impl ArtifactApp {
                     cx.notify();
                 }
                 ScanMessage::Error(err) => {
+                    self.scan_cancel = None;
                     self.error_message = Some(err);
                     self.set_notice(
                         NoticeKind::Error,
@@ -458,9 +490,35 @@ impl ArtifactApp {
         }
     }
 
+    // -- Scan cancellation --------------------------------------------------
+
+    #[allow(dead_code)]
+    pub fn cancel_scan(&mut self, cx: &mut Context<Self>) {
+        if let Some(cancel) = self.scan_cancel.take() {
+            cancel.store(true, Ordering::Relaxed);
+        }
+        self.scan_state = ScanState::Idle;
+        self.scan_progress_data = None;
+        self.scan_receiver = None;
+        cx.notify();
+    }
+
     // -- Selection & deletion -----------------------------------------------
 
+    pub fn request_delete_confirm(&mut self, cx: &mut Context<Self>) {
+        if self.selected_size > 0 {
+            self.pending_delete = true;
+            cx.notify();
+        }
+    }
+
+    pub fn cancel_delete_confirm(&mut self, cx: &mut Context<Self>) {
+        self.pending_delete = false;
+        cx.notify();
+    }
+
     pub fn delete_selected(&mut self, cx: &mut Context<Self>) {
+        self.pending_delete = false;
         info!("Deleting selected directories");
 
         let to_delete: Vec<_> = self
@@ -492,14 +550,10 @@ impl ArtifactApp {
                             item.project_root.clone(),
                             item.project_name.clone(),
                         );
-
-                        let db_clone = Arc::clone(db);
-
-                        thread::spawn(move || {
-                            if let Err(e) = db_clone.record_deletion(&record) {
-                                error!("Failed to record deletion in database: {}", e);
-                            }
-                        });
+                        if let Err(e) = db.record_deletion(&record) {
+                            error!("Failed to record deletion in database: {}", e);
+                            errors.push(format!("[db write] {}: {}", item.path.display(), e));
+                        }
                     }
 
                     self.directories.retain(|d| d.path != item.path);
@@ -617,6 +671,21 @@ impl ArtifactApp {
     }
 
     pub fn browse_navigate(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        match std::fs::symlink_metadata(&path) {
+            Err(e) => {
+                warn!("browse_navigate: cannot read {}: {}", path.display(), e);
+                return;
+            }
+            Ok(meta) if meta.file_type().is_symlink() => {
+                warn!("browse_navigate: refusing symlink {}", path.display());
+                return;
+            }
+            Ok(meta) if !meta.is_dir() => {
+                warn!("browse_navigate: not a directory {}", path.display());
+                return;
+            }
+            Ok(_) => {}
+        }
         self.browse_path = path;
         self.refresh_browse_entries();
         cx.notify();

@@ -355,3 +355,99 @@ pub struct DeletionStatistics {
     pub total_space_freed: i64,
     pub deletions_by_type: std::collections::HashMap<String, (i64, i64)>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::directory_item::DirectoryType;
+    use crate::rules;
+
+    fn temp_db() -> (DeletionDatabase, tempfile::TempDir) {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = DeletionDatabase::new(Some(tmp.path().to_path_buf())).unwrap();
+        (db, tmp)
+    }
+
+    fn sample_record() -> DeletionRecord {
+        let rule = rules::find("node_modules").unwrap();
+        DeletionRecord::new(
+            std::path::PathBuf::from("/tmp/myproject/node_modules"),
+            DirectoryType::new(rule),
+            512 * 1024 * 1024, // 512 MiB
+            Some(std::path::PathBuf::from("/tmp/myproject")),
+            Some("myproject".to_string()),
+        )
+    }
+
+    #[test]
+    fn insert_and_retrieve() {
+        let (db, _tmp) = temp_db();
+        let record = sample_record();
+        let id = db.record_deletion(&record).unwrap();
+        assert!(id > 0);
+
+        let recent = db.get_recent_deletions(10).unwrap();
+        assert_eq!(recent.len(), 1);
+        assert_eq!(recent[0].path, record.path);
+        assert_eq!(recent[0].size_bytes, record.size_bytes);
+    }
+
+    #[test]
+    fn recent_deletions_ordered_newest_first() {
+        let (db, _tmp) = temp_db();
+        let r1 = sample_record();
+        let r2 = DeletionRecord::new(
+            std::path::PathBuf::from("/tmp/other/node_modules"),
+            DirectoryType::new(rules::find("node_modules").unwrap()),
+            1024,
+            None,
+            Some("other".to_string()),
+        );
+        db.record_deletion(&r1).unwrap();
+        // Small sleep to ensure different timestamps
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        db.record_deletion(&r2).unwrap();
+
+        let recent = db.get_recent_deletions(10).unwrap();
+        assert_eq!(recent.len(), 2);
+        // Newest (r2) should come first
+        assert!(recent[0].deleted_at >= recent[1].deleted_at);
+    }
+
+    #[test]
+    fn statistics_sums_correctly() {
+        let (db, _tmp) = temp_db();
+        db.record_deletion(&sample_record()).unwrap();
+        db.record_deletion(&sample_record()).unwrap();
+
+        let stats = db.get_deletion_statistics().unwrap();
+        assert_eq!(stats.total_deletions, 2);
+        assert_eq!(stats.total_space_freed, 2 * (512 * 1024 * 1024));
+        assert!(stats.deletions_by_type.contains_key("node_modules"));
+    }
+
+    #[test]
+    fn cleanup_old_records_removes_stale() {
+        let (db, _tmp) = temp_db();
+        db.record_deletion(&sample_record()).unwrap();
+
+        // Passing -1 days means "older than yesterday" which is everything ever
+        // inserted (since records are at most seconds old). Use a negative
+        // older_than_days to force cleanup of all records.
+        let removed = db.cleanup_old_records(-1).unwrap();
+        assert_eq!(removed, 1);
+
+        let recent = db.get_recent_deletions(10).unwrap();
+        assert!(recent.is_empty());
+    }
+
+    #[test]
+    fn empty_db_returns_empty_results() {
+        let (db, _tmp) = temp_db();
+        let recent = db.get_recent_deletions(10).unwrap();
+        assert!(recent.is_empty());
+        let stats = db.get_deletion_statistics().unwrap();
+        assert_eq!(stats.total_deletions, 0);
+        assert_eq!(stats.total_space_freed, 0);
+    }
+}
