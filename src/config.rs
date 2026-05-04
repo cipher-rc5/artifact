@@ -59,15 +59,15 @@ pub struct UiConfig {
     pub window_height: f32,
 }
 
-pub const MIN_WINDOW_WIDTH: f32 = 880.0;
-pub const MIN_WINDOW_HEIGHT: f32 = 640.0;
+pub const MIN_WINDOW_WIDTH: f32 = 1220.0;
+pub const MIN_WINDOW_HEIGHT: f32 = 860.0;
 
 fn default_window_width() -> f32 {
-    1200.0
+    1280.0
 }
 
 fn default_window_height() -> f32 {
-    760.0
+    860.0
 }
 
 impl Default for UiConfig {
@@ -197,8 +197,8 @@ mod tests {
     #[test]
     fn default_config_has_sensible_values() {
         let config = AppConfig::default();
-        assert_eq!(config.ui.window_width, 1200.0);
-        assert_eq!(config.ui.window_height, 760.0);
+        assert_eq!(config.ui.window_width, 1280.0);
+        assert_eq!(config.ui.window_height, 860.0);
         assert_eq!(config.logging.log_level, "info");
         assert!(!config.logging.log_to_file);
         assert!(config.logging.log_to_stdout);
@@ -252,6 +252,6 @@ delete_mode = "permanent"
         assert_eq!(config.ui.window_width, 1400.0);
         assert_eq!(config.scan.delete_mode, DeleteMode::Permanent);
         // Unset fields get defaults
-        assert_eq!(config.ui.window_height, 760.0);
+        assert_eq!(config.ui.window_height, 860.0);
     }
 }

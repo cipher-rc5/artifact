@@ -573,9 +573,9 @@ impl ArtifactView {
                                     .text_size(d.typography.size_xs)
                                     .text_color(d.colors.text_tertiary)
                                     .child(match scan_state {
-                                        ScanState::Idle => "IDLE",
-                                        ScanState::Scanning => "SCAN",
-                                        ScanState::Complete => "DONE",
+                                        ScanState::Idle => "Idle",
+                                        ScanState::Scanning => "Scan",
+                                        ScanState::Complete => "Done",
                                     }),
                             ),
                     ),
@@ -637,9 +637,9 @@ impl ArtifactView {
         compact: bool,
     ) -> Div {
         let status_text = match scan_state {
-            ScanState::Idle => "IDLE",
-            ScanState::Scanning => "SCAN_ACTIVE",
-            ScanState::Complete => "SCAN_COMPLETE",
+            ScanState::Idle => "Idle",
+            ScanState::Scanning => "Scan_Active",
+            ScanState::Complete => "Scan_Complete",
         };
 
         let identity = div()
@@ -662,13 +662,13 @@ impl ArtifactView {
             );
 
         let session_line = match scan_state {
-            ScanState::Idle if artifact_count == 0 => "SESSION: NONE".to_string(),
+            ScanState::Idle if artifact_count == 0 => "Session: None".to_string(),
             ScanState::Scanning => format!(
-                "SESSION: {} DIRS / {}",
+                "Session: {} DIRS / {}",
                 format_number(scan_dirs),
                 utils::format_elapsed(scan_elapsed)
             ),
-            _ => format!("SESSION: {} ARTIFACTS", format_number(artifact_count)),
+            _ => format!("Session: {} ARTIFACTS", format_number(artifact_count)),
         };
 
         let telemetry = div()
@@ -678,13 +678,13 @@ impl ArtifactView {
             .gap(px(18.0))
             .child(Self::topbar_block(
                 d,
-                &format!("SYSTEM_ID: {system_id}"),
-                &format!("STATUS: {status_text}"),
+                &format!("System_id: {system_id}"),
+                &format!("Status: {status_text}"),
             ))
             .child(Self::topbar_block(
                 d,
                 &format!(
-                    "PATH: {}",
+                    "Path: {}",
                     truncate_end(scan_path, if compact { 18 } else { 24 })
                 ),
                 &session_line,
@@ -818,7 +818,7 @@ impl ArtifactView {
                 banner.child(Self::terminal_button(
                     d,
                     "notice-results",
-                    "OPEN RESULTS",
+                    "Open Results",
                     true,
                     false,
                     cx.listener(|this, _, _, cx| {
@@ -1956,7 +1956,7 @@ impl ArtifactView {
                                     .text_size(d.typography.size_xs)
                                     .text_color(d.colors.text_secondary)
                                     .child(format!(
-                                        "{} ITEMS // {}",
+                                        "{} Items // {}",
                                         format_number(run.entries.len()),
                                         utils::format_size(bytes)
                                     )),
@@ -2468,7 +2468,7 @@ impl ArtifactView {
                         progress_path.to_string()
                     } else {
                         format!(
-                            "{} DIRS TRACKED // {} // {}",
+                            "{} Dirs Tracked // {} // {}",
                             format_number(dirs_scanned),
                             utils::format_elapsed(elapsed_secs),
                             progress_path
@@ -2603,16 +2603,16 @@ impl ArtifactView {
 
         if compact {
             base.child(div().w(px(18.0)).flex_shrink_0())
-                .child(header("COMPONENT_PATH").flex_1())
-                .child(header("SIZE").w(px(64.0)).flex_shrink_0())
-                .child(header("ACTION").w(px(36.0)).flex_shrink_0())
+                .child(header("Component_Path").flex_1())
+                .child(header("Size").w(px(64.0)).flex_shrink_0())
+                .child(header("Action").w(px(36.0)).flex_shrink_0())
         } else {
             base.child(div().w(px(18.0)).flex_shrink_0())
-                .child(header("COMPONENT_PATH").flex_1())
-                .child(header("TYPE").w(px(112.0)).flex_shrink_0())
-                .child(header("SIZE").w(px(72.0)).flex_shrink_0())
-                .child(header("METRIC").w(px(96.0)).flex_shrink_0())
-                .child(header("ACTION").w(px(36.0)).flex_shrink_0())
+                .child(header("Component_Patj").flex_1())
+                .child(header("Type").w(px(112.0)).flex_shrink_0())
+                .child(header("Size").w(px(72.0)).flex_shrink_0())
+                .child(header("Metric").w(px(96.0)).flex_shrink_0())
+                .child(header("Action").w(px(36.0)).flex_shrink_0())
         }
     }
 
@@ -2735,11 +2735,11 @@ impl ArtifactView {
                         .text_size(d.typography.size_xs)
                         .text_color(d.colors.text_secondary)
                         .child(if project_name.is_empty() {
-                            format!("TYPE: {status_label}")
+                            format!("Type: {status_label}")
                         } else if compact {
-                            format!("TYPE: {status_label} // {project_name}")
+                            format!("Type: {status_label} // {project_name}")
                         } else {
-                            format!("PROJECT: {project_name}")
+                            format!("Project: {project_name}")
                         }),
                 )
             });
@@ -2834,14 +2834,14 @@ impl ArtifactView {
                         div()
                             .text_size(d.typography.size_xs)
                             .text_color(d.colors.text_secondary)
-                            .child(format!("PATH: {}", path)),
+                            .child(format!("Path: {}", path)),
                     )
                     .child(
                         div()
                             .text_size(d.typography.size_xs)
                             .text_color(d.colors.text_tertiary)
                             .child(format!(
-                                "STATUS: {} // SIZE: {}",
+                                "Status: {} // Size: {}",
                                 status_label,
                                 utils::format_size(size_bytes)
                             )),
@@ -2917,7 +2917,7 @@ impl ArtifactView {
                                 div()
                                     .text_size(d.typography.size_xs)
                                     .text_color(d.colors.text_secondary)
-                                    .child("TOTAL SELECTION"),
+                                    .child("Total Selection"),
                             ),
                     )
                     .child(
@@ -2931,25 +2931,25 @@ impl ArtifactView {
             .child(Self::separator(d))
             .child(Self::results_metric_line(
                 d,
-                "DIRECTORIES",
+                "Directories",
                 &format_number(artifact_count),
             ))
             .child(Self::separator(d))
             .child(Self::results_metric_line(
                 d,
-                "SELECTED",
+                "Selected",
                 &format_number(selected_count),
             ))
             .child(Self::separator(d))
-            .child(Self::results_metric_line(d, "RISK_LEVEL", risk_level))
+            .child(Self::results_metric_line(d, "Risk_level", risk_level))
             .child(Self::separator(d))
             .child(Self::results_metric_line(
                 d,
-                "LAST_SCRUB",
+                "Last_scrub",
                 if deleted_count == 0 {
-                    "UNKNOWN"
+                    "Unknown"
                 } else {
-                    "RECORDED"
+                    "Recorded"
                 },
             ))
             .child(Self::separator(d))
@@ -2981,7 +2981,7 @@ impl ArtifactView {
                             .text_size(d.typography.size_sm)
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(d.colors.text_primary)
-                            .child("SAFETY_PROTOCOL"),
+                            .child("Safety_Protocol"),
                     )
                     .child(
                         div()
@@ -3024,13 +3024,13 @@ impl ArtifactView {
                                 div()
                                     .text_size(d.typography.size_xs)
                                     .text_color(d.colors.text_tertiary)
-                                    .child("HASH: 0X82F..91"),
+                                    .child("Hash: 0X82F..91"),
                             )
                             .child(
                                 div()
                                     .text_size(d.typography.size_xs)
                                     .text_color(d.colors.text_tertiary)
-                                    .child("REF: [P2-V2]"),
+                                    .child("Ref: [P2-V2]"),
                             ),
                     )
                     .child(
@@ -3038,7 +3038,7 @@ impl ArtifactView {
                             .text_size(d.typography.size_xs)
                             .text_color(d.colors.text_secondary)
                             .child(format!(
-                                "TOTAL SPACE IDENTIFIED: {}",
+                                "Total Space Identified: {}",
                                 utils::format_size(total_size)
                             )),
                     )
@@ -3349,12 +3349,12 @@ fn scaled_segments_from_max(size: u64, max: u64, max_segments: usize) -> usize {
 
 fn entry_type_label(dir_type: DirectoryType) -> &'static str {
     match dir_type.rule.name {
-        "rust_target" => "BUILD OUTPUT",
-        "python_venv" | "python_venv_alt" => "PYTHON VENV",
-        "pycache" => "PYTHON",
-        "next_cache" => "NEXT.JS",
-        "composer_vendor" => "VENDOR",
-        "node_modules" => "NODE.JS",
+        "rust_target" => "Build Output",
+        "python_venv" | "python_venv_alt" => "Python Venv",
+        "pycache" => "Python",
+        "next_cache" => "NextJS",
+        "composer_vendor" => "Vendor",
+        "node_modules" => "NodeJS",
         _ => dir_type.rule.language,
     }
 }
