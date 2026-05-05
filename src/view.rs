@@ -1880,7 +1880,7 @@ impl ArtifactView {
             .min_h_0()
             .overflow_y_scroll()
             .pl(px(12.0))
-            .pr(px(14.0))
+            .pr(px(22.0))
             .pt(px(8.0))
             .pb(px(12.0))
             .gap(px(8.0));
@@ -2033,7 +2033,7 @@ impl ArtifactView {
             .min_h_0()
             .overflow_y_scroll()
             .pl(px(16.0))
-            .pr(px(16.0))
+            .pr(px(22.0))
             .pt(px(4.0))
             .pb(px(14.0));
 
@@ -2197,7 +2197,7 @@ impl ArtifactView {
         div()
             .absolute()
             .top(px(0.0))
-            .right(px(0.0))
+            .right(px(4.0))
             .bottom(px(0.0))
             .w(px(8.0))
             .child(
@@ -2400,7 +2400,7 @@ impl ArtifactView {
         compact: bool,
     ) -> Div {
         let outer_size = if compact { px(180.0) } else { px(220.0) };
-        let inner_size = if compact { px(108.0) } else { px(132.0) };
+        let inner_size = if compact { px(122.0) } else { px(150.0) };
         let readiness_size = if compact { px(28.0) } else { px(34.0) };
 
         div()
@@ -2632,7 +2632,7 @@ impl ArtifactView {
             .flex_1()
             .min_h_0()
             .overflow_y_scroll()
-            .pr(px(12.0));
+            .pr(px(22.0));
 
         if entries.is_empty() {
             rows = rows.child(
@@ -2922,7 +2922,7 @@ impl ArtifactView {
                     )
                     .child(
                         div()
-                            .text_size(px(44.0))
+                            .text_size(px(30.0))
                             .font_weight(FontWeight::BLACK)
                             .text_color(d.colors.text_primary)
                             .child(utils::format_size(selected_size)),
