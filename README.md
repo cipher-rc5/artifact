@@ -16,7 +16,7 @@ See [`Cargo.toml`](./Cargo.toml) for the annotated dependency list.
 
 ## Requirements
 
-- Rust 1.85+ (edition 2024)
+- Rust 1.85+ (edition 2024, minimum toolchain 1.85)
 - macOS, Linux, or Windows
 
 For distribution / cross-compilation:

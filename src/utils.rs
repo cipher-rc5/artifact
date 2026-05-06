@@ -5,10 +5,20 @@ use crate::config::DeleteMode;
 use anyhow::Context as _;
 use std::path::{Path, PathBuf};
 
+/// Return the current user's home directory, or `None` if it cannot be
+/// determined on this platform.
 pub fn get_home_dir() -> Option<PathBuf> {
     dirs::home_dir()
 }
 
+/// Delete or trash `path` according to `mode`.
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - `path` does not exist.
+/// - `path` is a symbolic link (callers must resolve to the real path first).
+/// - The underlying delete / trash operation fails.
 pub fn remove_directory(path: &Path, mode: DeleteMode) -> anyhow::Result<()> {
     // Refuse to operate on a path that does not exist.
     if !path.exists() {
@@ -31,10 +41,15 @@ pub fn remove_directory(path: &Path, mode: DeleteMode) -> anyhow::Result<()> {
     }
 }
 
+/// Format a byte count as a human-readable binary string (e.g. `"1.50 GiB"`).
 pub fn format_size(bytes: u64) -> String {
     humansize::format_size(bytes, humansize::BINARY)
 }
 
+/// Format an elapsed time in seconds as a short human-readable string.
+///
+/// Values under 60 seconds are rendered as `"Xs"` (e.g. `"42s"`).
+/// Longer values are rendered as `"Xm Ys"` (e.g. `"1m 30s"`).
 pub fn format_elapsed(secs: f64) -> String {
     if secs < 60.0 {
         format!("{:.0}s", secs)
@@ -43,8 +58,10 @@ pub fn format_elapsed(secs: f64) -> String {
     }
 }
 
-/// List visible subdirectories of `path`, sorted alphabetically.
-/// Returns `(name, full_path)` pairs. Hidden directories (starting with `.`) are excluded.
+/// List visible subdirectories of `path`, sorted alphabetically (case-insensitive).
+///
+/// Returns `(name, full_path)` pairs. Hidden directories (names starting with
+/// `.`) are excluded. Returns an `io::Error` if `path` cannot be read.
 pub fn list_directories(path: &Path) -> std::io::Result<Vec<(String, PathBuf)>> {
     let mut entries = Vec::new();
     for entry in std::fs::read_dir(path)? {
@@ -58,7 +75,7 @@ pub fn list_directories(path: &Path) -> std::io::Result<Vec<(String, PathBuf)>> 
             }
         }
     }
-    entries.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
+    entries.sort_by_key(|a| a.0.to_lowercase());
     Ok(entries)
 }
 

@@ -2,6 +2,9 @@
 // description: GPUI application entry point with bento box UI
 // reference: https://github.com/zed-industries/zed
 
+// GPUI and its dependencies use internal cfg flags (e.g. blade/Metal feature
+// detection) that are not declared via --check-cfg in their build scripts.
+// This suppresses the resulting "unexpected `cfg` condition" warnings.
 #![allow(unexpected_cfgs)]
 
 mod app;

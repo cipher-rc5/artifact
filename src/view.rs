@@ -85,6 +85,7 @@ pub struct ArtifactView {
     history_cache: Vec<HistoryRun>,
     history_loaded_at: Option<std::time::Instant>,
     history_error: Option<String>,
+    system_id: String,
 }
 
 impl ArtifactView {
@@ -121,6 +122,11 @@ impl ArtifactView {
             history_cache: Vec::new(),
             history_loaded_at: None,
             history_error: None,
+            system_id: hostname::get()
+                .ok()
+                .and_then(|n| n.into_string().ok())
+                .unwrap_or_else(|| "WORKSTATION".to_string())
+                .to_uppercase(),
         }
     }
 
@@ -209,7 +215,7 @@ impl Render for ArtifactView {
             .iter()
             .map(|e| (e.name.clone(), e.path.clone()))
             .collect();
-        let scan_log: Vec<String> = app.scan_log.iter().rev().cloned().collect();
+        let scan_log: Vec<String> = app.scan_log().iter().rev().cloned().collect();
 
         let view_entries: Vec<ViewEntry> = app
             .visible_entries()
@@ -235,11 +241,7 @@ impl Render for ArtifactView {
         let selected_count = view_entries.iter().filter(|entry| entry.selected).count();
         let artifact_buckets = summarize_artifacts(&view_entries);
         let chart_buckets = summary_windows(&artifact_buckets);
-        let system_id = hostname::get()
-            .ok()
-            .and_then(|name| name.into_string().ok())
-            .unwrap_or_else(|| "WORKSTATION".to_string())
-            .to_uppercase();
+        let system_id = self.system_id.clone();
         let scan_dirs = app.directories_scanned().unwrap_or(0);
         let scan_elapsed = app.scan_elapsed_secs().unwrap_or(0.0);
 
@@ -626,6 +628,7 @@ impl ArtifactView {
         button
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn render_topbar(
         d: DesignSystem,
         system_id: &str,
@@ -1300,6 +1303,7 @@ impl ArtifactView {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn render_results_view(
         &self,
         d: DesignSystem,
@@ -2389,6 +2393,7 @@ impl ArtifactView {
             }))
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn render_gauge(
         d: DesignSystem,
         readiness: usize,

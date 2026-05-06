@@ -1,35 +1,45 @@
-// file: src/error.rs
-// description: Error types for ARTIFACT
+//! Crate-wide error types for ARTIFACT.
 
 use thiserror::Error;
 
+/// Convenience alias for `Result<T, ArtifactError>`.
 pub type Result<T> = std::result::Result<T, ArtifactError>;
 
+/// Application-level errors.
+#[non_exhaustive]
 #[derive(Debug, Error)]
 pub enum ArtifactError {
+    /// A problem reading or applying the TOML configuration file.
     #[error("Configuration error: {0}")]
     Configuration(String),
 
+    /// The redb database could not be created or opened.
     #[error("Database initialization error: {0}")]
     DatabaseInit(String),
 
+    /// A connection-level redb error (e.g. version mismatch, corrupt file).
     #[error("Database connection error: {0}")]
     DatabaseConnection(String),
 
+    /// A query, transaction, or commit failed at runtime.
     #[error("Database query error: {0}")]
     DatabaseQuery(String),
 
+    /// The filesystem scan encountered an unrecoverable error.
     #[error("Scan error: {0}")]
     Scan(String),
 
+    /// An underlying OS I/O error (file not found, permission denied, etc.).
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 
+    /// A path could not be parsed or converted to a valid UTF-8 string.
     #[error("Path error: {0}")]
     Path(String),
 }
 
 impl ArtifactError {
+    /// Return a human-readable message suitable for display in the UI.
     pub fn user_message(&self) -> String {
         match self {
             Self::Configuration(msg) => format!("Configuration problem: {}", msg),

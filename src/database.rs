@@ -1,7 +1,8 @@
-// file: src/database.rs
-// description: redb-backed deletion history store with secondary indices on
-// deleted_at and dir_type for cheap range scans and grouped aggregations.
-// reference: https://github.com/cberner/redb
+//! Redb-backed deletion history store.
+//!
+//! Schema: a primary `deletions` table keyed by auto-incremented `u64` ID,
+//! with secondary indices on `(deleted_at, id)` for time-range scans and
+//! `(dir_type, id)` for type-grouped queries.
 
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 use rkyv::{Archive, Deserialize, Serialize, rancor::Error as RkyvError, util::AlignedVec};
@@ -30,9 +31,13 @@ const IDX_DIR_TYPE: TableDefinition<(&str, u64), ()> = TableDefinition::new("idx
 const META: TableDefinition<&str, u64> = TableDefinition::new("meta");
 const META_NEXT_ID: &str = "next_id";
 
+/// A record of a single directory deletion, persisted to the redb database.
+///
+/// Created via [`DeletionRecord::new`] before insertion; the `id` field is
+/// assigned by [`DeletionDatabase::record_deletion`] on first write.
 #[derive(Debug, Clone, Archive, Serialize, Deserialize)]
 pub struct DeletionRecord {
-    pub id: i64,
+    id: i64,
     pub path: String,
     pub dir_type: String,
     pub size_bytes: i64,
@@ -43,6 +48,10 @@ pub struct DeletionRecord {
 }
 
 impl DeletionRecord {
+    /// Create a new unperisted deletion record.
+    ///
+    /// The `id` is `0` until the record is written to the database via
+    /// [`DeletionDatabase::record_deletion`], which returns the assigned ID.
     pub fn new(
         path: PathBuf,
         dir_type: DirectoryType,
@@ -55,11 +64,21 @@ impl DeletionRecord {
             .unwrap()
             .as_secs() as i64;
 
-        let metadata = serde_json::json!({
-            "version": SCHEMA_VERSION,
-            "hostname": hostname::get().ok().and_then(|h| h.into_string().ok()),
-        })
-        .to_string();
+        let hostname_val = hostname::get()
+            .ok()
+            .and_then(|h| h.into_string().ok())
+            .map(|s| {
+                // Minimal JSON string escaping for hostname
+                let escaped = s.replace('\\', "\\\\").replace('"', "\\\"");
+                format!("\"{}\"", escaped)
+            })
+            .unwrap_or_else(|| "null".to_string());
+
+        let metadata = format!(
+            r#"{{"version":{},"hostname":{}}}"#,
+            SCHEMA_VERSION,
+            hostname_val
+        );
 
         Self {
             id: 0,
@@ -72,6 +91,14 @@ impl DeletionRecord {
             metadata,
         }
     }
+
+    /// Return the database-assigned integer ID.
+    ///
+    /// Returns `0` for records that have not yet been persisted via
+    /// [`DeletionDatabase::record_deletion`].
+    pub fn id(&self) -> i64 {
+        self.id
+    }
 }
 
 pub struct DeletionDatabase {
@@ -79,6 +106,11 @@ pub struct DeletionDatabase {
 }
 
 impl DeletionDatabase {
+    /// Open (or create) the deletion database at the given directory.
+    ///
+    /// If `data_dir` is `None`, the database is placed in the platform config
+    /// directory (`~/.config/artifact/` on Linux, `~/Library/Application Support/artifact/` on macOS).
+    /// The required directory is created if it does not exist.
     #[instrument(skip_all)]
     pub fn new(data_dir: Option<PathBuf>) -> Result<Self> {
         info!("Initializing deletion database");
@@ -130,6 +162,10 @@ impl DeletionDatabase {
         Ok(())
     }
 
+    /// Persist a deletion record and return the assigned integer ID.
+    ///
+    /// The record is written to three tables atomically: the primary records
+    /// table, the time-index, and the type-index.
     #[instrument(skip(self, record), fields(path = %record.path))]
     pub fn record_deletion(&self, record: &DeletionRecord) -> Result<i64> {
         debug!(
@@ -193,6 +229,7 @@ impl DeletionDatabase {
         Ok(Some(Self::decode_record(value.value())?))
     }
 
+    /// Return up to `limit` deletion records ordered newest-first.
     #[instrument(skip(self))]
     pub fn get_recent_deletions(&self, limit: usize) -> Result<Vec<DeletionRecord>> {
         debug!("Fetching {} recent deletions", limit);
@@ -218,6 +255,8 @@ impl DeletionDatabase {
         Ok(out)
     }
 
+    /// Return deletion records whose `deleted_at` Unix timestamp falls within
+    /// `[start_timestamp, end_timestamp]`, ordered newest-first.
     #[instrument(skip(self))]
     pub fn get_deletions_by_time_range(
         &self,
@@ -249,6 +288,7 @@ impl DeletionDatabase {
         Ok(out)
     }
 
+    /// Sum the `size_bytes` of every deletion record and return the total.
     #[instrument(skip(self))]
     pub fn get_total_space_freed(&self) -> Result<i64> {
         debug!("Calculating total space freed");
@@ -267,6 +307,7 @@ impl DeletionDatabase {
         Ok(total)
     }
 
+    /// Compute aggregate statistics over all deletion records.
     #[instrument(skip(self))]
     pub fn get_deletion_statistics(&self) -> Result<DeletionStatistics> {
         debug!("Calculating deletion statistics");
@@ -299,6 +340,9 @@ impl DeletionDatabase {
         Ok(stats)
     }
 
+    /// Delete records older than `older_than_days` days and return the count removed.
+    ///
+    /// Pass a negative value (e.g. `-1`) to remove all records regardless of age.
     #[instrument(skip(self))]
     pub fn cleanup_old_records(&self, older_than_days: i64) -> Result<usize> {
         let cutoff_timestamp = SystemTime::now()
@@ -349,10 +393,14 @@ impl DeletionDatabase {
     }
 }
 
+/// Aggregate statistics computed over all deletion records.
 #[derive(Debug, Clone)]
 pub struct DeletionStatistics {
+    /// Total number of deletion records.
     pub total_deletions: i64,
+    /// Sum of `size_bytes` across all records.
     pub total_space_freed: i64,
+    /// Per-type breakdown: maps `dir_type` name → `(count, total_bytes)`.
     pub deletions_by_type: std::collections::HashMap<String, (i64, i64)>,
 }
 

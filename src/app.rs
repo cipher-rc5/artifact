@@ -4,7 +4,7 @@
 
 use gpui::*;
 use parking_lot::Mutex;
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -24,6 +24,7 @@ use artifact::utils;
 // Public types
 // ---------------------------------------------------------------------------
 
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScanState {
     Idle,
@@ -46,6 +47,7 @@ pub struct BrowseEntry {
     pub path: PathBuf,
 }
 
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NoticeKind {
     Success,
@@ -62,12 +64,8 @@ pub struct StatusNotice {
 #[derive(Debug, Clone)]
 pub struct HistoryEntry {
     pub path: String,
-    #[allow(dead_code)]
-    pub dir_type: String,
     pub size_bytes: i64,
     pub deleted_at: i64,
-    #[allow(dead_code)]
-    pub project_name: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -126,7 +124,7 @@ pub struct ArtifactApp {
     browse_entries: Vec<BrowseEntry>,
 
     // Live scan log (capped at 60 entries for the log panel)
-    pub scan_log: Vec<String>,
+    scan_log: VecDeque<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -185,9 +183,8 @@ impl ArtifactApp {
         self.pending_delete
     }
 
-    #[allow(dead_code)]
-    pub fn is_scan_cancellable(&self) -> bool {
-        self.scan_cancel.is_some()
+    pub fn scan_log(&self) -> &VecDeque<String> {
+        &self.scan_log
     }
 
     pub fn directories_scanned(&self) -> Option<usize> {
@@ -206,45 +203,7 @@ impl ArtifactApp {
             Err(e) => return Err(e.to_string()),
         };
 
-        if records.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        // Group records that fall within the same run window. We treat any pair
-        // of deletions within RUN_WINDOW_SECS of each other as part of the same
-        // run. Records are descending by deleted_at from the DB.
-        const RUN_WINDOW_SECS: i64 = 60;
-        let mut runs: Vec<HistoryRun> = Vec::new();
-        for rec in records {
-            let entry = HistoryEntry {
-                path: rec.path,
-                dir_type: rec.dir_type,
-                size_bytes: rec.size_bytes,
-                deleted_at: rec.deleted_at,
-                project_name: rec.project_name,
-            };
-
-            match runs.last_mut() {
-                Some(run)
-                    if (run.started_at - entry.deleted_at).abs() <= RUN_WINDOW_SECS =>
-                {
-                    if entry.deleted_at < run.started_at {
-                        run.started_at = entry.deleted_at;
-                    }
-                    run.total_bytes += entry.size_bytes;
-                    run.entries.push(entry);
-                }
-                _ => {
-                    runs.push(HistoryRun {
-                        started_at: entry.deleted_at,
-                        total_bytes: entry.size_bytes,
-                        entries: vec![entry],
-                    });
-                }
-            }
-        }
-
-        Ok(runs)
+        Ok(group_into_runs(records))
     }
 }
 
@@ -269,12 +228,12 @@ impl ArtifactApp {
     }
 
     pub fn expire_notice_if_stale(&mut self, cx: &mut Context<Self>) {
-        if let Some(set_at) = self.notice_set_at {
-            if set_at.elapsed() >= NOTICE_TTL {
-                self.notice = None;
-                self.notice_set_at = None;
-                cx.notify();
-            }
+        if let Some(set_at) = self.notice_set_at
+            && set_at.elapsed() >= NOTICE_TTL
+        {
+            self.notice = None;
+            self.notice_set_at = None;
+            cx.notify();
         }
     }
 }
@@ -330,7 +289,7 @@ impl ArtifactApp {
             show_file_browser: false,
             browse_path: home_path,
             browse_entries: Vec::new(),
-            scan_log: Vec::new(),
+            scan_log: VecDeque::new(),
         })
     }
 
@@ -390,12 +349,14 @@ impl ArtifactApp {
         let enabled_rules: Vec<String> = self.enabled_rules.iter().cloned().collect();
         let start_time = Instant::now();
 
+        let max_results = self.config.scan.max_results;
         let cancel = Arc::new(AtomicBool::new(false));
         self.scan_cancel = Some(Arc::clone(&cancel));
         let cancel_for_cb = Arc::clone(&cancel);
 
         thread::spawn(move || {
-            let scanner = Scanner::with_enabled(PathBuf::from(&scan_path), enabled_rules);
+            let scanner = Scanner::with_enabled(PathBuf::from(&scan_path), enabled_rules)
+                .with_max_results(max_results);
             let tx_cb = tx.clone();
 
             match scanner.scan_with_progress(
@@ -448,9 +409,9 @@ impl ArtifactApp {
                 ScanMessage::Progress(progress) => {
                     if !progress.current_path.is_empty() {
                         if self.scan_log.len() >= 60 {
-                            self.scan_log.remove(0);
+                            self.scan_log.pop_front();
                         }
-                        self.scan_log.push(progress.current_path.clone());
+                        self.scan_log.push_back(progress.current_path.clone());
                     }
                     self.scan_progress_data = Some(progress);
                     cx.notify();
@@ -488,19 +449,6 @@ impl ArtifactApp {
                 }
             }
         }
-    }
-
-    // -- Scan cancellation --------------------------------------------------
-
-    #[allow(dead_code)]
-    pub fn cancel_scan(&mut self, cx: &mut Context<Self>) {
-        if let Some(cancel) = self.scan_cancel.take() {
-            cancel.store(true, Ordering::Relaxed);
-        }
-        self.scan_state = ScanState::Idle;
-        self.scan_progress_data = None;
-        self.scan_receiver = None;
-        cx.notify();
     }
 
     // -- Selection & deletion -----------------------------------------------
@@ -545,7 +493,7 @@ impl ArtifactApp {
                     if let Some(db) = &self.database {
                         let record = DeletionRecord::new(
                             item.path.clone(),
-                            item.dir_type.clone(),
+                            item.dir_type,
                             item.size_bytes,
                             item.project_root.clone(),
                             item.project_name.clone(),
@@ -604,33 +552,6 @@ impl ArtifactApp {
             self.update_selected_size();
             cx.notify();
         }
-    }
-
-    #[allow(dead_code)]
-    pub fn select_all(&mut self, cx: &mut Context<Self>) {
-        let show_orphaned_only = self.show_orphaned_only;
-
-        for dir in &mut self.directories {
-            let should_show = if show_orphaned_only {
-                dir.is_orphaned
-            } else {
-                true
-            };
-            if should_show {
-                dir.selected = true;
-            }
-        }
-        self.update_selected_size();
-        cx.notify();
-    }
-
-    #[allow(dead_code)]
-    pub fn select_none(&mut self, cx: &mut Context<Self>) {
-        for dir in &mut self.directories {
-            dir.selected = false;
-        }
-        self.selected_size = 0;
-        cx.notify();
     }
 
     pub fn visible_entries(&self) -> Vec<(usize, &DirectoryItem)> {
@@ -788,3 +709,37 @@ fn format_number(n: usize) -> String {
     }
     result.chars().rev().collect()
 }
+
+// Group records that fall within the same run window. We treat any pair of
+// deletions within RUN_WINDOW_SECS of each other as part of the same run.
+// Records are expected to be in descending order by deleted_at from the DB.
+fn group_into_runs(records: Vec<artifact::database::DeletionRecord>) -> Vec<HistoryRun> {
+    const RUN_WINDOW_SECS: i64 = 60;
+    let mut runs: Vec<HistoryRun> = Vec::new();
+    for rec in records {
+        let entry = HistoryEntry {
+            path: rec.path,
+            size_bytes: rec.size_bytes,
+            deleted_at: rec.deleted_at,
+        };
+
+        match runs.last_mut() {
+            Some(run) if (run.started_at - entry.deleted_at).abs() <= RUN_WINDOW_SECS => {
+                if entry.deleted_at < run.started_at {
+                    run.started_at = entry.deleted_at;
+                }
+                run.total_bytes += entry.size_bytes;
+                run.entries.push(entry);
+            }
+            _ => {
+                runs.push(HistoryRun {
+                    started_at: entry.deleted_at,
+                    total_bytes: entry.size_bytes,
+                    entries: vec![entry],
+                });
+            }
+        }
+    }
+    runs
+}
+

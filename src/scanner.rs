@@ -11,13 +11,15 @@
 //   - Progress events are throttled: at most one update per 50 ms in the hot
 //     loop, plus one event when each artifact is added.
 
+use std::cmp::Reverse;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use jwalk::WalkDirGeneric;
+use parking_lot::Mutex;
 use tracing::{debug, info};
 
 use crate::directory_item::{DirectoryItem, DirectoryType};
@@ -28,6 +30,9 @@ use crate::rules::{self, ArtifactRule};
 /// outer traversal. Item-discovery events bypass this throttle.
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(50);
 
+/// A filesystem scanner that walks a root directory, applies the rule registry
+/// to detect artifact directories (e.g. `node_modules`, `target`), and returns
+/// them sorted by on-disk size (largest first).
 pub struct Scanner {
     root: PathBuf,
     enabled_rules: Vec<&'static ArtifactRule>,
@@ -35,6 +40,17 @@ pub struct Scanner {
 }
 
 impl Scanner {
+    /// Create a new `Scanner` rooted at `root` with all built-in rules enabled.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use std::path::PathBuf;
+    /// use artifact::scanner::Scanner;
+    ///
+    /// let scanner = Scanner::new(PathBuf::from("/home/user"));
+    /// let results = scanner.scan().unwrap();
+    /// ```
     pub fn new(root: PathBuf) -> Self {
         Self {
             root,
@@ -52,6 +68,16 @@ impl Scanner {
 
     /// Build a scanner restricted to a specific set of rule names. Unknown
     /// names are silently skipped.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use std::path::PathBuf;
+    /// use artifact::scanner::Scanner;
+    ///
+    /// let scanner = Scanner::with_enabled(PathBuf::from("/home/user"), ["node_modules"]);
+    /// let results = scanner.scan().unwrap();
+    /// ```
     pub fn with_enabled<I, S>(root: PathBuf, names: I) -> Self
     where
         I: IntoIterator<Item = S>,
@@ -69,6 +95,10 @@ impl Scanner {
         }
     }
 
+    /// Run a synchronous scan returning all detected artifact directories.
+    ///
+    /// This is a convenience wrapper around [`Scanner::scan_with_progress`] that
+    /// provides no progress feedback and no cancellation support.
     pub fn scan(&self) -> Result<Vec<DirectoryItem>> {
         use std::sync::atomic::AtomicBool;
         let cancel = Arc::new(AtomicBool::new(false));
@@ -128,7 +158,7 @@ impl Scanner {
                         continue;
                     }
                     let count = dirs_scanned.load(Ordering::Relaxed);
-                    let mut last = last_progress.lock().unwrap();
+                    let mut last = last_progress.lock();
                     if last.elapsed() >= PROGRESS_INTERVAL {
                         *last = Instant::now();
                         drop(last);
@@ -136,7 +166,7 @@ impl Scanner {
                         let path_str = path.display().to_string();
                         on_progress(
                             count,
-                            matches.lock().unwrap().len(),
+                            matches.lock().len(),
                             &path_str,
                             total_size_found.load(Ordering::Relaxed),
                         );
@@ -148,7 +178,7 @@ impl Scanner {
 
         // Size each match in parallel.
         let raw_matches: Vec<(PathBuf, &'static ArtifactRule)> = {
-            let mut guard = matches.lock().unwrap();
+            let mut guard = matches.lock();
             let mut taken = std::mem::take(&mut *guard);
             if let Some(limit) = max_results {
                 taken.truncate(limit);
@@ -191,7 +221,7 @@ impl Scanner {
             total_size_found.load(Ordering::Relaxed),
         );
 
-        results.sort_by(|a, b| b.size_bytes.cmp(&a.size_bytes));
+        results.sort_by_key(|b| Reverse(b.size_bytes));
         info!(
             "Scan complete: found {} directories ({} dirs visited)",
             results.len(),
@@ -248,7 +278,7 @@ impl Scanner {
                     });
                     if let Some(rule) = matched {
                         let path = entry.path();
-                        matches.lock().unwrap().push((path, rule));
+                        matches.lock().push((path, rule));
                         // Don't walk into matched artifacts during the outer
                         // traversal — sizing handles their interior.
                         entry.read_children_path = None;
@@ -265,10 +295,10 @@ fn has_marker(parent: &Path, marker: &str) -> bool {
     if let Some(ext) = marker.strip_prefix('.').filter(|s| !s.contains('/')) {
         if let Ok(rd) = std::fs::read_dir(parent) {
             for entry in rd.flatten() {
-                if let Some(name) = entry.file_name().to_str() {
-                    if name.ends_with(&format!(".{ext}")) {
-                        return true;
-                    }
+                if let Some(name) = entry.file_name().to_str()
+                    && name.ends_with(&format!(".{ext}"))
+                {
+                    return true;
                 }
             }
         }
@@ -313,16 +343,16 @@ fn build_item(path: PathBuf, rule: &'static ArtifactRule) -> Option<DirectoryIte
 
 fn parallel_dir_size(path: &Path) -> u64 {
     let total = AtomicU64::new(0);
-    for entry in WalkDirGeneric::<((), ())>::new(path)
+    for de in WalkDirGeneric::<((), ())>::new(path)
         .follow_links(false)
         .skip_hidden(false)
+        .into_iter()
+        .flatten()
     {
-        if let Ok(de) = entry {
-            if de.file_type.is_file() {
-                if let Ok(meta) = de.metadata() {
-                    total.fetch_add(meta.len(), Ordering::Relaxed);
-                }
-            }
+        if de.file_type.is_file()
+            && let Ok(meta) = de.metadata()
+        {
+            total.fetch_add(meta.len(), Ordering::Relaxed);
         }
     }
     total.load(Ordering::Relaxed)
@@ -404,7 +434,7 @@ mod tests {
         fs::create_dir_all(dir.join("target").join("debug")).unwrap();
         // NO Cargo.toml
 
-        let scanner = Scanner::with_enabled(root, &["rust_target"]);
+        let scanner = Scanner::with_enabled(root, ["rust_target"]);
         let results = scanner.scan().unwrap();
         assert!(results.is_empty(), "should not match target/ without Cargo.toml; got: {results:?}");
     }
@@ -473,5 +503,34 @@ mod tests {
             results.is_empty(),
             "node_modules without package.json marker should not match"
         );
+    }
+
+    #[test]
+    fn has_marker_extension_based() {
+        let tmp = tempfile::tempdir().unwrap();
+        let parent = tmp.path();
+
+        // No files yet → should return false
+        assert!(!has_marker(parent, ".csproj"));
+
+        // Create a .csproj file → should return true
+        fs::write(parent.join("MyApp.csproj"), b"<Project/>").unwrap();
+        assert!(has_marker(parent, ".csproj"));
+
+        // Different extension → still false
+        assert!(!has_marker(parent, ".fsproj"));
+    }
+
+    #[test]
+    fn has_marker_plain_filename() {
+        let tmp = tempfile::tempdir().unwrap();
+        let parent = tmp.path();
+
+        // Cargo.toml doesn't exist yet
+        assert!(!has_marker(parent, "Cargo.toml"));
+
+        // Create it
+        fs::write(parent.join("Cargo.toml"), b"[package]").unwrap();
+        assert!(has_marker(parent, "Cargo.toml"));
     }
 }

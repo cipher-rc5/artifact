@@ -1,37 +1,49 @@
-// file: src/config.rs
-// description: Application configuration with defaults
+//! TOML-based application configuration with validated defaults.
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+/// Top-level application configuration, read from `~/.config/artifact/config.toml`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AppConfig {
+    /// User-interface settings (window size, etc.).
     #[serde(default)]
     pub ui: UiConfig,
+    /// Logging output settings.
     #[serde(default)]
     pub logging: LoggingConfig,
+    /// Database storage settings.
     #[serde(default)]
     pub database: DatabaseConfig,
+    /// Filesystem scan settings.
     #[serde(default)]
     pub scan: ScanConfig,
 }
 
+/// How detected artifact directories are removed.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DeleteMode {
+    /// Move to the OS recycle bin / trash (default; recoverable).
     #[default]
     Trash,
+    /// Permanently delete without recovery option.
     Permanent,
 }
 
+/// Settings that control which artifacts are found and how they are handled.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScanConfig {
+    /// Optional whitelist of language names to scan. `None` means scan all.
     #[serde(default)]
     pub enabled_languages: Option<Vec<String>>,
+    /// Whether deleted directories go to trash or are permanently removed.
     #[serde(default)]
     pub delete_mode: DeleteMode,
+    /// Maximum number of results to display in the results panel.
     #[serde(default = "default_max_results")]
     pub max_results: usize,
+    /// When `true`, only show artifacts whose project root no longer exists.
     #[serde(default)]
     pub show_orphaned_only: bool,
 }
@@ -51,15 +63,20 @@ impl Default for ScanConfig {
     }
 }
 
+/// User-interface geometry settings.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UiConfig {
+    /// Initial window width in logical pixels (clamped to [`MIN_WINDOW_WIDTH`]).
     #[serde(default = "default_window_width")]
     pub window_width: f32,
+    /// Initial window height in logical pixels (clamped to [`MIN_WINDOW_HEIGHT`]).
     #[serde(default = "default_window_height")]
     pub window_height: f32,
 }
 
+/// Minimum window width in logical pixels.
 pub const MIN_WINDOW_WIDTH: f32 = 1220.0;
+/// Minimum window height in logical pixels.
 pub const MIN_WINDOW_HEIGHT: f32 = 860.0;
 
 fn default_window_width() -> f32 {
@@ -79,14 +96,19 @@ impl Default for UiConfig {
     }
 }
 
+/// Settings that control how tracing events are captured and written.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LoggingConfig {
+    /// Minimum tracing level (`error`, `warn`, `info`, `debug`, `trace`).
     #[serde(default = "default_log_level")]
     pub log_level: String,
+    /// Write log events to a rolling file in the data directory.
     #[serde(default)]
     pub log_to_file: bool,
+    /// Write log events to standard output.
     #[serde(default = "default_true")]
     pub log_to_stdout: bool,
+    /// Emit log lines as JSON objects instead of human-readable text.
     #[serde(default)]
     pub json_format: bool,
 }
@@ -110,8 +132,10 @@ impl Default for LoggingConfig {
     }
 }
 
+/// Settings that control where the redb database is stored.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DatabaseConfig {
+    /// Override the default data directory path. `None` uses the platform data dir.
     #[serde(default)]
     pub data_dir: Option<String>,
 }
@@ -136,12 +160,18 @@ impl AppConfig {
         }
     }
 
-    pub fn load() -> anyhow::Result<Self> {
+    /// Load configuration from the platform config directory.
+    ///
+    /// Returns `Ok(AppConfig::default())` if no config file exists yet.
+    /// Constraint-clamping ([`AppConfig::apply_constraints`]) is applied after
+    /// a successful parse.
+    pub fn load() -> crate::error::Result<Self> {
         let config_path = Self::config_path();
 
         if config_path.exists() {
             let content = std::fs::read_to_string(&config_path)?;
-            let mut config: AppConfig = toml::from_str(&content)?;
+            let mut config: AppConfig = toml::from_str(&content)
+                .map_err(|e| crate::error::ArtifactError::Configuration(e.to_string()))?;
             config.apply_constraints();
             Ok(config)
         } else {
@@ -149,14 +179,19 @@ impl AppConfig {
         }
     }
 
-    pub fn save(&self) -> anyhow::Result<()> {
+    /// Serialize this configuration to TOML and write it to disk.
+    ///
+    /// Creates the config directory if it does not already exist.
+    pub fn save(&self) -> crate::error::Result<()> {
         let config_dir = Self::config_dir();
         std::fs::create_dir_all(&config_dir)?;
-        let content = toml::to_string_pretty(self)?;
+        let content = toml::to_string_pretty(self)
+            .map_err(|e| crate::error::ArtifactError::Configuration(e.to_string()))?;
         std::fs::write(Self::config_path(), content)?;
         Ok(())
     }
 
+    /// Return the directory where rolling log files are written.
     pub fn get_log_dir(&self) -> PathBuf {
         dirs::data_dir()
             .unwrap_or_else(|| PathBuf::from("."))
@@ -164,10 +199,12 @@ impl AppConfig {
             .join("logs")
     }
 
+    /// Return the configured log level string (e.g. `"info"`).
     pub fn get_log_level(&self) -> String {
         self.logging.log_level.clone()
     }
 
+    /// Return the path to the redb database directory.
     pub fn get_db_path(&self) -> PathBuf {
         if let Some(ref dir) = self.database.data_dir {
             PathBuf::from(dir)
