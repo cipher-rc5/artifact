@@ -1019,9 +1019,7 @@ impl ArtifactView {
         let progress_items = progress.map_or(item_count, |p| p.items_found.max(item_count));
         let progress_size = progress.map_or(total_size, |p| p.total_size_found.max(total_size));
         let progress_elapsed = progress.map_or(0.0, |p| p.elapsed_secs);
-        let progress_path = progress
-            .map(|p| p.current_path.clone())
-            .unwrap_or_default();
+        let progress_path = progress.map(|p| p.current_path.clone()).unwrap_or_default();
         let status_label = match scan_state {
             ScanState::Idle => "System_Ready",
             ScanState::Scanning => "Scan_Active",
@@ -1035,7 +1033,10 @@ impl ArtifactView {
                     if total == 0 {
                         return None;
                     }
-                    Some(((p.directories_scanned as f64 / total as f64) * 99.0).clamp(1.0, 99.0) as usize)
+                    Some(
+                        ((p.directories_scanned as f64 / total as f64) * 99.0).clamp(1.0, 99.0)
+                            as usize,
+                    )
                 })
                 .unwrap_or(1),
             ScanState::Complete => 100,
@@ -1461,7 +1462,14 @@ impl ArtifactView {
             "Select_Scan_Root",
             "Browser // FS",
             if file_browser_open {
-                self.render_browser_list(d, browse_path, browse_entries, can_browse_back, can_browse_forward, cx)
+                self.render_browser_list(
+                    d,
+                    browse_path,
+                    browse_entries,
+                    can_browse_back,
+                    can_browse_forward,
+                    cx,
+                )
             } else {
                 div()
                     .px(px(18.0))
