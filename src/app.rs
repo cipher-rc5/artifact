@@ -85,6 +85,12 @@ enum ScanMessage {
     Error(String),
 }
 
+enum DeleteMessage {
+    ItemDeleted(PathBuf),
+    ItemFailed(String),
+    Complete,
+}
+
 // ---------------------------------------------------------------------------
 // App model
 // ---------------------------------------------------------------------------
@@ -118,10 +124,17 @@ pub struct ArtifactApp {
     // Database
     database: Option<Arc<DeletionDatabase>>,
 
+    // Async deletion
+    is_deleting: bool,
+    delete_receiver: Option<Arc<Mutex<Receiver<DeleteMessage>>>>,
+    delete_errors: Vec<String>,
+
     // File browser
     show_file_browser: bool,
     browse_path: PathBuf,
     browse_entries: Vec<BrowseEntry>,
+    browse_back_stack: Vec<PathBuf>,
+    browse_forward_stack: Vec<PathBuf>,
 
     // Live scan log (capped at 60 entries for the log panel)
     scan_log: VecDeque<String>,
@@ -170,6 +183,15 @@ impl ArtifactApp {
     }
     pub fn browse_entries(&self) -> &[BrowseEntry] {
         &self.browse_entries
+    }
+    pub fn can_browse_back(&self) -> bool {
+        !self.browse_back_stack.is_empty()
+    }
+    pub fn can_browse_forward(&self) -> bool {
+        !self.browse_forward_stack.is_empty()
+    }
+    pub fn is_deleting(&self) -> bool {
+        self.is_deleting
     }
     pub fn delete_mode(&self) -> DeleteMode {
         self.config.scan.delete_mode
@@ -286,9 +308,14 @@ impl ArtifactApp {
             notice_set_at: None,
             pending_delete: false,
             database,
+            is_deleting: false,
+            delete_receiver: None,
+            delete_errors: Vec::new(),
             show_file_browser: false,
             browse_path: home_path,
             browse_entries: Vec::new(),
+            browse_back_stack: Vec::new(),
+            browse_forward_stack: Vec::new(),
             scan_log: VecDeque::new(),
         })
     }
@@ -467,7 +494,9 @@ impl ArtifactApp {
 
     pub fn delete_selected(&mut self, cx: &mut Context<Self>) {
         self.pending_delete = false;
-        info!("Deleting selected directories");
+        if self.is_deleting {
+            return;
+        }
 
         let to_delete: Vec<_> = self
             .directories
@@ -476,73 +505,130 @@ impl ArtifactApp {
             .cloned()
             .collect();
 
-        info!("Preparing to delete {} directories", to_delete.len());
+        if to_delete.is_empty() {
+            return;
+        }
 
-        let mut success_count = 0;
-        let mut errors = Vec::new();
+        info!("Spawning background deletion for {} directories", to_delete.len());
+
         let delete_mode = self.config.scan.delete_mode;
+        let database = self.database.clone();
+        let (tx, rx) = channel::<DeleteMessage>();
 
-        for item in to_delete {
-            debug!("Deleting directory: {}", item.path.display());
+        self.is_deleting = true;
+        self.delete_errors.clear();
+        self.delete_receiver = Some(Arc::new(Mutex::new(rx)));
 
-            match utils::remove_directory(&item.path, delete_mode) {
-                Ok(_) => {
-                    info!("Successfully deleted: {}", item.path.display());
-                    success_count += 1;
-
-                    if let Some(db) = &self.database {
-                        let record = DeletionRecord::new(
-                            item.path.clone(),
-                            item.dir_type,
-                            item.size_bytes,
-                            item.project_root.clone(),
-                            item.project_name.clone(),
-                        );
-                        if let Err(e) = db.record_deletion(&record) {
-                            error!("Failed to record deletion in database: {}", e);
-                            errors.push(format!("[db write] {}: {}", item.path.display(), e));
+        thread::spawn(move || {
+            for item in to_delete {
+                debug!("Deleting directory: {}", item.path.display());
+                match utils::remove_directory(&item.path, delete_mode) {
+                    Ok(_) => {
+                        info!("Deleted: {}", item.path.display());
+                        if let Some(db) = &database {
+                            let record = DeletionRecord::new(
+                                item.path.clone(),
+                                item.dir_type,
+                                item.size_bytes,
+                                item.project_root.clone(),
+                                item.project_name.clone(),
+                            );
+                            if let Err(e) = db.record_deletion(&record) {
+                                error!("DB write failed: {}", e);
+                            }
                         }
+                        let _ = tx.send(DeleteMessage::ItemDeleted(item.path));
                     }
-
-                    self.directories.retain(|d| d.path != item.path);
+                    Err(e) => {
+                        error!("Failed to delete {}: {}", item.path.display(), e);
+                        let _ = tx.send(DeleteMessage::ItemFailed(
+                            format!("{}: {}", item.path.display(), e),
+                        ));
+                    }
                 }
-                Err(e) => {
-                    error!("Failed to delete {}: {}", item.path.display(), e);
-                    errors.push(format!("{}: {}", item.path.display(), e));
+            }
+            let _ = tx.send(DeleteMessage::Complete);
+        });
+
+        cx.notify();
+    }
+
+    pub fn check_delete_progress(&mut self, cx: &mut Context<Self>) {
+        let rx = match self.delete_receiver.clone() {
+            Some(rx) => rx,
+            None => return,
+        };
+
+        let rx = rx.lock();
+        let mut messages = Vec::new();
+        while let Ok(msg) = rx.try_recv() {
+            messages.push(msg);
+        }
+        drop(rx);
+
+        let mut changed = false;
+        for msg in messages {
+            match msg {
+                DeleteMessage::ItemDeleted(path) => {
+                    self.directories.retain(|d| d.path != path);
+                    self.deleted_count += 1;
+                    changed = true;
+                }
+                DeleteMessage::ItemFailed(err) => {
+                    self.delete_errors.push(err);
+                    changed = true;
+                }
+                DeleteMessage::Complete => {
+                    self.is_deleting = false;
+                    self.delete_receiver = None;
+                    self.total_size = self.directories.iter().map(|d| d.size_bytes).sum();
+                    self.selected_size = 0;
+                    let delete_mode = self.config.scan.delete_mode;
+                    if self.delete_errors.is_empty() {
+                        self.error_message = None;
+                        let action_label = match delete_mode {
+                            DeleteMode::Trash => "Moved selected artifacts to Trash.",
+                            DeleteMode::Permanent => "Permanently deleted selected artifacts.",
+                        };
+                        self.set_notice(
+                            NoticeKind::Success,
+                            "CLEANUP COMPLETE",
+                            format!("{} {} items processed.", action_label, format_number(self.deleted_count)),
+                        );
+                    } else {
+                        let n = self.delete_errors.len();
+                        self.error_message = Some(format!("Failed to delete {} directories", n));
+                        self.set_notice(
+                            NoticeKind::Error,
+                            "CLEANUP INCOMPLETE",
+                            format!("Failed to delete {} directories", n),
+                        );
+                    }
+                    changed = true;
                 }
             }
         }
 
-        self.deleted_count += success_count;
-        self.total_size = self.directories.iter().map(|d| d.size_bytes).sum();
-        self.selected_size = 0;
-
-        if !errors.is_empty() {
-            warn!("Deletion completed with {} errors", errors.len());
-            self.error_message = Some(format!("Failed to delete {} directories", errors.len()));
-            self.set_notice(
-                NoticeKind::Error,
-                "CLEANUP INCOMPLETE",
-                self.error_message.clone().unwrap_or_default(),
-            );
-        } else {
-            info!("All deletions completed successfully");
-            self.error_message = None;
-            let action_label = match delete_mode {
-                DeleteMode::Trash => "Moved selected artifacts to Trash.",
-                DeleteMode::Permanent => "Permanently deleted selected artifacts.",
-            };
-            self.set_notice(
-                NoticeKind::Success,
-                "CLEANUP COMPLETE",
-                format!(
-                    "{} {} items processed.",
-                    action_label,
-                    format_number(success_count)
-                ),
-            );
+        if changed {
+            cx.notify();
         }
+    }
 
+    pub fn select_all_visible(&mut self, cx: &mut Context<Self>) {
+        for dir in &mut self.directories {
+            if !self.show_orphaned_only || dir.is_orphaned {
+                dir.selected = true;
+            }
+        }
+        self.update_selected_size();
+        cx.notify();
+    }
+
+    pub fn deselect_all(&mut self, cx: &mut Context<Self>) {
+        for dir in &mut self.directories {
+            dir.selected = false;
+        }
+        self.update_selected_size();
         cx.notify();
     }
 
@@ -581,6 +667,8 @@ impl ArtifactApp {
 
     pub fn open_file_browser(&mut self, cx: &mut Context<Self>) {
         self.browse_path = PathBuf::from(&self.scan_path);
+        self.browse_back_stack.clear();
+        self.browse_forward_stack.clear();
         self.refresh_browse_entries();
         self.show_file_browser = true;
         cx.notify();
@@ -607,9 +695,29 @@ impl ArtifactApp {
             }
             Ok(_) => {}
         }
+        self.browse_back_stack.push(self.browse_path.clone());
+        self.browse_forward_stack.clear();
         self.browse_path = path;
         self.refresh_browse_entries();
         cx.notify();
+    }
+
+    pub fn browse_back(&mut self, cx: &mut Context<Self>) {
+        if let Some(prev) = self.browse_back_stack.pop() {
+            self.browse_forward_stack.push(self.browse_path.clone());
+            self.browse_path = prev;
+            self.refresh_browse_entries();
+            cx.notify();
+        }
+    }
+
+    pub fn browse_forward(&mut self, cx: &mut Context<Self>) {
+        if let Some(next) = self.browse_forward_stack.pop() {
+            self.browse_back_stack.push(self.browse_path.clone());
+            self.browse_path = next;
+            self.refresh_browse_entries();
+            cx.notify();
+        }
     }
 
     pub fn browse_select(&mut self, cx: &mut Context<Self>) {

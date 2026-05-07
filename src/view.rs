@@ -101,6 +101,7 @@ impl ArtifactView {
                 let _ = cx.update(|cx| {
                     app_clone.update(cx, |app, cx| {
                         app.check_scan_progress(cx);
+                        app.check_delete_progress(cx);
                         app.expire_notice_if_stale(cx);
                     });
                 });
@@ -197,6 +198,7 @@ impl Render for ArtifactView {
         let notice = app.notice().cloned();
         let delete_mode = app.delete_mode();
         let pending_delete = app.pending_delete();
+        let is_deleting = app.is_deleting();
         let enabled_rule_names: Vec<(&'static str, bool)> = rules::RULES
             .iter()
             .map(|r| (r.name, app.is_rule_enabled(r.name)))
@@ -215,6 +217,8 @@ impl Render for ArtifactView {
             .iter()
             .map(|e| (e.name.clone(), e.path.clone()))
             .collect();
+        let can_browse_back = app.can_browse_back();
+        let can_browse_forward = app.can_browse_forward();
         let scan_log: Vec<String> = app.scan_log().iter().rev().cloned().collect();
 
         let view_entries: Vec<ViewEntry> = app
@@ -317,6 +321,7 @@ impl Render for ArtifactView {
                                     error_msg.as_deref(),
                                     deleted_count,
                                     delete_mode,
+                                    is_deleting,
                                     viewport_width,
                                     cx,
                                 ),
@@ -327,6 +332,8 @@ impl Render for ArtifactView {
                                     &browse_path,
                                     &browse_entries,
                                     file_browser_open,
+                                    can_browse_back,
+                                    can_browse_forward,
                                     enabled_language_count,
                                     language_settings.len(),
                                     show_orphaned,
@@ -1315,6 +1322,7 @@ impl ArtifactView {
         error_msg: Option<&str>,
         deleted_count: usize,
         delete_mode: DeleteMode,
+        is_deleting: bool,
         viewport_width: Pixels,
         cx: &mut Context<Self>,
     ) -> Div {
@@ -1362,6 +1370,7 @@ impl ArtifactView {
                 error_msg,
                 deleted_count,
                 delete_mode,
+                is_deleting,
                 app,
             ),
         );
@@ -1396,6 +1405,8 @@ impl ArtifactView {
         browse_path: &str,
         browse_entries: &[(String, PathBuf)],
         file_browser_open: bool,
+        can_browse_back: bool,
+        can_browse_forward: bool,
         enabled_language_count: usize,
         total_languages: usize,
         show_orphaned: bool,
@@ -1411,7 +1422,7 @@ impl ArtifactView {
             "Select_Scan_Root",
             "Browser // FS",
             if file_browser_open {
-                self.render_browser_list(d, browse_path, browse_entries, cx)
+                self.render_browser_list(d, browse_path, browse_entries, can_browse_back, can_browse_forward, cx)
             } else {
                 div()
                     .px(px(18.0))
@@ -1556,10 +1567,14 @@ impl ArtifactView {
         d: DesignSystem,
         browse_path: &str,
         entries: &[(String, PathBuf)],
+        can_browse_back: bool,
+        can_browse_forward: bool,
         cx: &mut Context<Self>,
     ) -> Div {
         let app_cancel = self.app.clone();
         let app_select = self.app.clone();
+        let app_back = self.app.clone();
+        let app_forward = self.app.clone();
 
         let mut list = div()
             .id("browser-list")
@@ -1644,9 +1659,36 @@ impl ArtifactView {
             .gap(px(10.0))
             .child(
                 div()
-                    .text_size(d.typography.size_xs)
-                    .text_color(d.colors.text_secondary)
-                    .child(truncate_end(browse_path, 72)),
+                    .flex()
+                    .items_center()
+                    .gap(px(8.0))
+                    .child(Self::terminal_button_sm(
+                        d,
+                        "browse-back",
+                        "<",
+                        can_browse_back,
+                        move |_, _, cx| {
+                            app_back.update(cx, |app, cx| app.browse_back(cx));
+                        },
+                    ))
+                    .child(Self::terminal_button_sm(
+                        d,
+                        "browse-forward",
+                        ">",
+                        can_browse_forward,
+                        move |_, _, cx| {
+                            app_forward.update(cx, |app, cx| app.browse_forward(cx));
+                        },
+                    ))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .text_size(d.typography.size_xs)
+                            .text_color(d.colors.text_secondary)
+                            .overflow_hidden()
+                            .child(truncate_end(browse_path, 60)),
+                    ),
             )
             .child(Self::separator(d))
             .child(list_with_overlay)
@@ -2868,13 +2910,21 @@ impl ArtifactView {
         error_msg: Option<&str>,
         deleted_count: usize,
         delete_mode: DeleteMode,
+        is_deleting: bool,
         app: Entity<ArtifactApp>,
     ) -> Div {
-        let action_enabled = selected_size > 0;
+        let action_enabled = selected_size > 0 && !is_deleting;
+        let has_results = artifact_count > 0;
         let app_delete = app.clone();
-        let action_label = match delete_mode {
-            DeleteMode::Trash => "Move To Trash",
-            DeleteMode::Permanent => "Delete Permanently",
+        let app_select_all = app.clone();
+        let app_deselect_all = app.clone();
+        let action_label = if is_deleting {
+            "Deleting..."
+        } else {
+            match delete_mode {
+                DeleteMode::Trash => "Move To Trash",
+                DeleteMode::Permanent => "Delete Permanently",
+            }
         };
         let safety_copy = match delete_mode {
             DeleteMode::Trash => {
@@ -2890,6 +2940,7 @@ impl ArtifactView {
             .flex_col()
             .flex_1()
             .px(px(18.0))
+            .pt(px(14.0))
             .pb(px(18.0))
             .child(
                 div()
@@ -2899,10 +2950,11 @@ impl ArtifactView {
                     .border_color(d.colors.accent_green)
                     .rounded(d.radius.xs)
                     .bg(Gradients::cta_emphasized(&d.colors))
-                    .p(px(18.0))
+                    .px(px(16.0))
+                    .py(px(12.0))
                     .flex()
                     .flex_col()
-                    .gap(px(10.0))
+                    .gap(px(8.0))
                     .child(
                         div()
                             .absolute()
@@ -2927,7 +2979,7 @@ impl ArtifactView {
                     )
                     .child(
                         div()
-                            .text_size(px(30.0))
+                            .text_size(px(24.0))
                             .font_weight(FontWeight::BLACK)
                             .text_color(d.colors.text_primary)
                             .child(utils::format_size(selected_size)),
@@ -2960,15 +3012,15 @@ impl ArtifactView {
             .child(Self::separator(d))
             .child(
                 div()
-                    .my(px(20.0))
+                    .my(px(12.0))
                     .relative()
                     .border_1()
                     .border_color(d.colors.border_primary)
                     .rounded(d.radius.xs)
                     .bg(Gradients::cta_quiet(&d.colors))
-                    .pl(px(20.0))
-                    .pr(px(16.0))
-                    .py(px(16.0))
+                    .pl(px(16.0))
+                    .pr(px(12.0))
+                    .py(px(10.0))
                     .child(
                         div()
                             .absolute()
@@ -3045,6 +3097,30 @@ impl ArtifactView {
                             .child(format!(
                                 "Total Space Identified: {}",
                                 utils::format_size(total_size)
+                            )),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(8.0))
+                            .child(Self::terminal_button_sm(
+                                d,
+                                "select-all-btn",
+                                "Select All",
+                                has_results,
+                                move |_, _, cx| {
+                                    app_select_all.update(cx, |app, cx| app.select_all_visible(cx));
+                                },
+                            ))
+                            .child(Self::terminal_button_sm(
+                                d,
+                                "deselect-all-btn",
+                                "Clear All",
+                                action_enabled,
+                                move |_, _, cx| {
+                                    app_deselect_all.update(cx, |app, cx| app.deselect_all(cx));
+                                },
                             )),
                     )
                     .child(Self::terminal_button(
@@ -3210,6 +3286,43 @@ impl ArtifactView {
                         })
                         .child(label),
                 ),
+        )
+    }
+
+    fn terminal_button_sm(
+        d: DesignSystem,
+        id: impl Into<ElementId>,
+        label: &'static str,
+        enabled: bool,
+        on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    ) -> Stateful<Div> {
+        let mut button = div()
+            .id(id)
+            .px(px(10.0))
+            .py(px(4.0))
+            .border_1()
+            .border_color(d.colors.border_primary)
+            .bg(Gradients::cta_quiet(&d.colors))
+            .rounded(d.radius.xs);
+
+        if enabled {
+            button = button
+                .cursor_pointer()
+                .hover(|style| style.bg(Gradients::cta_emphasized(&d.colors)))
+                .active(|style| style.bg(alpha(d.colors.text_primary, 0.12)))
+                .on_click(move |event, window, app| on_click(event, window, app));
+        }
+
+        button.child(
+            div()
+                .text_size(px(11.0))
+                .font_weight(FontWeight::BLACK)
+                .text_color(if enabled {
+                    d.colors.text_primary
+                } else {
+                    d.colors.text_tertiary
+                })
+                .child(label),
         )
     }
 
