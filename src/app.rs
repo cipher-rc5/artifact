@@ -39,6 +39,9 @@ pub struct ScanProgress {
     pub current_path: String,
     pub total_size_found: u64,
     pub elapsed_secs: f64,
+    /// Total directories pre-counted before the scan; used to compute a real
+    /// progress percentage instead of a fixed placeholder.
+    pub total_dirs: Option<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -384,6 +387,13 @@ impl ArtifactApp {
         thread::spawn(move || {
             let scanner = Scanner::with_enabled(PathBuf::from(&scan_path), enabled_rules)
                 .with_max_results(max_results);
+
+            // Pre-count directories so the UI can show real progress rather
+            // than a fixed placeholder. This mirrors the actual walker's
+            // filter logic, so the count closely tracks dirs_scanned.
+            let total_dirs = scanner.count_directories();
+            let total_dirs_opt = if total_dirs > 0 { Some(total_dirs) } else { None };
+
             let tx_cb = tx.clone();
 
             match scanner.scan_with_progress(
@@ -397,6 +407,7 @@ impl ArtifactApp {
                             current_path: current_path.to_string(),
                             total_size_found: total_size,
                             elapsed_secs: elapsed,
+                            total_dirs: total_dirs_opt,
                         }))
                         .is_err()
                     {

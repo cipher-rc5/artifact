@@ -693,10 +693,7 @@ impl ArtifactView {
             ))
             .child(Self::topbar_block(
                 d,
-                &format!(
-                    "Path: {}",
-                    truncate_end(scan_path, if compact { 18 } else { 24 })
-                ),
+                &format!("Path: {scan_path}"),
                 &session_line,
             ));
 
@@ -1023,8 +1020,8 @@ impl ArtifactView {
         let progress_size = progress.map_or(total_size, |p| p.total_size_found.max(total_size));
         let progress_elapsed = progress.map_or(0.0, |p| p.elapsed_secs);
         let progress_path = progress
-            .map(|p| truncate_end(&p.current_path, 48))
-            .unwrap_or_else(|| "Awaiting Target Directive".to_string());
+            .map(|p| p.current_path.clone())
+            .unwrap_or_default();
         let status_label = match scan_state {
             ScanState::Idle => "System_Ready",
             ScanState::Scanning => "Scan_Active",
@@ -1032,7 +1029,15 @@ impl ArtifactView {
         };
         let readiness = match scan_state {
             ScanState::Idle => 0,
-            ScanState::Scanning => 62,
+            ScanState::Scanning => progress
+                .and_then(|p| {
+                    let total = p.total_dirs?;
+                    if total == 0 {
+                        return None;
+                    }
+                    Some(((p.directories_scanned as f64 / total as f64) * 99.0).clamp(1.0, 99.0) as usize)
+                })
+                .unwrap_or(1),
             ScanState::Complete => 100,
         };
         let center_button_label = match scan_state {
@@ -1042,6 +1047,7 @@ impl ArtifactView {
         };
         let button_enabled = scan_state != ScanState::Scanning;
         let app_scan = self.app.clone();
+        let app_rescan = self.app.clone();
 
         let left_column = div()
             .w(side_panel_width)
@@ -1167,6 +1173,7 @@ impl ArtifactView {
                 progress_elapsed,
                 &progress_path,
                 dense,
+                matches!(scan_state, ScanState::Scanning),
             ))
             .child(
                 div()
@@ -1192,22 +1199,54 @@ impl ArtifactView {
                         d.colors.text_primary,
                     )),
             )
-            .child(Self::terminal_button(
-                d,
-                "dashboard-cta",
-                center_button_label,
-                button_enabled,
-                true,
-                cx.listener(move |this, _, _, cx| match scan_state {
-                    ScanState::Idle => {
-                        app_scan.update(cx, |app, cx| app.start_scan(cx));
-                    }
-                    ScanState::Scanning => {}
-                    ScanState::Complete => {
-                        this.navigate_to_view(SidebarView::Results, cx);
-                    }
-                }),
-            ))
+            .child(if scan_state == ScanState::Complete {
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .gap(px(8.0))
+                    .child(Self::terminal_button(
+                        d,
+                        "dashboard-cta",
+                        center_button_label,
+                        true,
+                        true,
+                        cx.listener(move |this, _, _, cx| {
+                            this.navigate_to_view(SidebarView::Results, cx);
+                        }),
+                    ))
+                    .child(Self::terminal_button(
+                        d,
+                        "dashboard-rescan",
+                        "Rescan",
+                        true,
+                        false,
+                        cx.listener(move |_, _, _, cx| {
+                            app_rescan.update(cx, |app, cx| app.start_scan(cx));
+                        }),
+                    ))
+            } else {
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(Self::terminal_button(
+                        d,
+                        "dashboard-cta",
+                        center_button_label,
+                        button_enabled,
+                        true,
+                        cx.listener(move |this, _, _, cx| match scan_state {
+                            ScanState::Idle => {
+                                app_scan.update(cx, |app, cx| app.start_scan(cx));
+                            }
+                            ScanState::Scanning => {}
+                            ScanState::Complete => {
+                                this.navigate_to_view(SidebarView::Results, cx);
+                            }
+                        }),
+                    ))
+            })
             .child(
                 div()
                     .flex()
@@ -2445,10 +2484,20 @@ impl ArtifactView {
         elapsed_secs: f64,
         progress_path: &str,
         compact: bool,
+        is_scanning: bool,
     ) -> Div {
         let outer_size = if compact { px(180.0) } else { px(220.0) };
         let inner_size = if compact { px(122.0) } else { px(150.0) };
         let readiness_size = if compact { px(28.0) } else { px(34.0) };
+
+        // Pulse the ring opacity while a scan is active. The view re-renders
+        // on every progress event (~50ms), giving a smooth 0.5 Hz breathe.
+        let (outer_opacity, inner_opacity) = if is_scanning {
+            let t = (elapsed_secs * std::f64::consts::PI * 0.5).sin() as f32 * 0.5 + 0.5;
+            (0.20 + t * 0.20, 0.38 + t * 0.27)
+        } else {
+            (0.30, 0.55)
+        };
 
         div()
             .flex()
@@ -2461,7 +2510,7 @@ impl ArtifactView {
                     .h(outer_size)
                     .rounded_full()
                     .border_1()
-                    .border_color(alpha(d.colors.accent_green, 0.30))
+                    .border_color(alpha(d.colors.accent_green, outer_opacity))
                     .flex()
                     .items_center()
                     .justify_center()
@@ -2471,7 +2520,7 @@ impl ArtifactView {
                             .h(inner_size)
                             .rounded_full()
                             .border_2()
-                            .border_color(alpha(d.colors.accent_green, 0.55))
+                            .border_color(alpha(d.colors.accent_green, inner_opacity))
                             .bg(Gradients::gauge_inner(&d.colors))
                             .flex()
                             .items_center()
@@ -2494,15 +2543,6 @@ impl ArtifactView {
                                             .font_weight(FontWeight::BLACK)
                                             .text_color(d.colors.text_primary)
                                             .child(format!("{readiness}%")),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_size(d.typography.size_xs)
-                                            .text_color(d.colors.text_tertiary)
-                                            .child(format!(
-                                                "Sector 4F / BLOCK {}",
-                                                (item_count.max(12) % 89) + 10
-                                            )),
                                     ),
                             ),
                     ),
@@ -2511,17 +2551,24 @@ impl ArtifactView {
                 div()
                     .text_size(d.typography.size_xs)
                     .text_color(d.colors.text_tertiary)
-                    .child(if dirs_scanned == 0 {
-                        progress_path.to_string()
-                    } else {
-                        format!(
+                    .child(format!(
+                        "Sector 4F / BLOCK {}",
+                        (item_count.max(12) % 89) + 10
+                    )),
+            )
+            .when(dirs_scanned > 0, |el| {
+                el.child(
+                    div()
+                        .text_size(d.typography.size_xs)
+                        .text_color(d.colors.text_tertiary)
+                        .child(format!(
                             "{} Dirs Tracked // {} // {}",
                             format_number(dirs_scanned),
                             utils::format_elapsed(elapsed_secs),
                             progress_path
-                        )
-                    }),
-            )
+                        )),
+                )
+            })
     }
 
     fn status_callout(d: DesignSystem, label: &str, value: &str, color: Hsla) -> Div {

@@ -230,6 +230,52 @@ impl Scanner {
         Ok(results)
     }
 
+    /// Do a fast pre-pass to count how many directories the main scan will
+    /// visit. Applies the same retention/pruning logic as `build_walker` so
+    /// the count closely matches `dirs_scanned` reported during the real scan.
+    pub fn count_directories(&self) -> usize {
+        let count = Arc::new(AtomicUsize::new(0));
+        let enabled = self.enabled_rules.clone();
+        let count_clone = Arc::clone(&count);
+
+        let walker = WalkDirGeneric::<((), ())>::new(&self.root)
+            .follow_links(false)
+            .skip_hidden(false)
+            .process_read_dir(move |_depth, parent_path, _state, children| {
+                count_clone.fetch_add(1, Ordering::Relaxed);
+
+                children.retain(|child| {
+                    let Ok(child) = child else { return true };
+                    let name = child.file_name().to_string_lossy();
+                    if name.starts_with('.') {
+                        return enabled.iter().any(|r| r.dir_name == name.as_ref());
+                    }
+                    !matches!(name.as_ref(), "Library" | "Applications" | "System")
+                });
+
+                for child in children.iter_mut() {
+                    let Ok(entry) = child else { continue };
+                    if !entry.file_type.is_dir() {
+                        continue;
+                    }
+                    let name_owned = entry.file_name().to_string_lossy().into_owned();
+                    let matched = enabled.iter().any(|rule| {
+                        if rule.dir_name != name_owned {
+                            return false;
+                        }
+                        rule.markers.is_empty()
+                            || rule.markers.iter().any(|m| has_marker(parent_path, m))
+                    });
+                    if matched {
+                        entry.read_children_path = None;
+                    }
+                }
+            });
+
+        for _ in walker {}
+        count.load(Ordering::Relaxed)
+    }
+
     fn build_walker(
         &self,
         matches: Arc<Mutex<Vec<(PathBuf, &'static ArtifactRule)>>>,
