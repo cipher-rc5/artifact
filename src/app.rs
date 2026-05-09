@@ -359,6 +359,23 @@ impl ArtifactApp {
 
     // -- Scanning -----------------------------------------------------------
 
+    pub fn reset_scan(&mut self, cx: &mut Context<Self>) {
+        if let Some(cancel) = self.scan_cancel.take() {
+            cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        self.scan_state = ScanState::Idle;
+        self.directories.clear();
+        self.total_size = 0;
+        self.selected_size = 0;
+        self.error_message = None;
+        self.notice = None;
+        self.notice_set_at = None;
+        self.scan_progress_data = None;
+        self.scan_receiver = None;
+        self.scan_log.clear();
+        cx.notify();
+    }
+
     pub fn start_scan(&mut self, cx: &mut Context<Self>) {
         info!("Starting scan at path: {}", self.scan_path);
 

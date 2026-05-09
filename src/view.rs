@@ -1049,6 +1049,7 @@ impl ArtifactView {
         let button_enabled = scan_state != ScanState::Scanning;
         let app_scan = self.app.clone();
         let app_rescan = self.app.clone();
+        let app_reset = self.app.clone();
 
         let left_column = div()
             .w(side_panel_width)
@@ -1163,109 +1164,138 @@ impl ArtifactView {
             .flex()
             .flex_col()
             .items_center()
-            .justify_center()
-            .gap(px(14.0))
-            .child(Self::render_gauge(
-                d,
-                readiness,
-                status_label,
-                item_count,
-                progress_dirs,
-                progress_elapsed,
-                &progress_path,
-                dense,
-                matches!(scan_state, ScanState::Scanning),
-            ))
             .child(
                 div()
+                    .w_full()
+                    .flex_shrink_0()
                     .flex()
-                    .flex_wrap()
-                    .items_center()
-                    .justify_center()
-                    .gap(px(24.0))
-                    .child(Self::status_callout(
-                        d,
-                        "Status",
-                        status_label,
-                        match scan_state {
-                            ScanState::Idle => d.colors.text_secondary,
-                            ScanState::Scanning => d.colors.accent_orange,
-                            ScanState::Complete => d.colors.accent_green,
-                        },
-                    ))
-                    .child(Self::status_callout(
-                        d,
-                        "Artifacts",
-                        &format!("{} Found", format_number(progress_items)),
-                        d.colors.text_primary,
-                    )),
+                    .justify_end()
+                    .child(if scan_state == ScanState::Complete {
+                        div().child(Self::terminal_button(
+                            d,
+                            "dashboard-reset",
+                            "Reset",
+                            true,
+                            false,
+                            cx.listener(move |_, _, _, cx| {
+                                app_reset.update(cx, |app, cx| app.reset_scan(cx));
+                            }),
+                        ))
+                    } else {
+                        div()
+                    }),
             )
-            .child(if scan_state == ScanState::Complete {
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .gap(px(8.0))
-                    .child(Self::terminal_button(
-                        d,
-                        "dashboard-cta",
-                        center_button_label,
-                        true,
-                        true,
-                        cx.listener(move |this, _, _, cx| {
-                            this.navigate_to_view(SidebarView::Results, cx);
-                        }),
-                    ))
-                    .child(Self::terminal_button(
-                        d,
-                        "dashboard-rescan",
-                        "Rescan",
-                        true,
-                        false,
-                        cx.listener(move |_, _, _, cx| {
-                            app_rescan.update(cx, |app, cx| app.start_scan(cx));
-                        }),
-                    ))
-            } else {
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(Self::terminal_button(
-                        d,
-                        "dashboard-cta",
-                        center_button_label,
-                        button_enabled,
-                        true,
-                        cx.listener(move |this, _, _, cx| match scan_state {
-                            ScanState::Idle => {
-                                app_scan.update(cx, |app, cx| app.start_scan(cx));
-                            }
-                            ScanState::Scanning => {}
-                            ScanState::Complete => {
-                                this.navigate_to_view(SidebarView::Results, cx);
-                            }
-                        }),
-                    ))
-            })
             .child(
                 div()
+                    .flex_1()
+                    .w_full()
                     .flex()
-                    .flex_wrap()
-                    .justify_center()
+                    .flex_col()
                     .items_center()
-                    .gap(px(36.0))
+                    .justify_center()
+                    .gap(px(14.0))
+                    .child(Self::render_gauge(
+                        d,
+                        readiness,
+                        status_label,
+                        item_count,
+                        progress_dirs,
+                        progress_elapsed,
+                        &progress_path,
+                        dense,
+                        matches!(scan_state, ScanState::Scanning),
+                    ))
                     .child(
                         div()
-                            .text_size(d.typography.size_xs)
-                            .text_color(d.colors.text_tertiary)
-                            .child("CMD: artifact.exe --full-scan"),
+                            .flex()
+                            .flex_wrap()
+                            .items_center()
+                            .justify_center()
+                            .gap(px(24.0))
+                            .child(Self::status_callout(
+                                d,
+                                "Status",
+                                status_label,
+                                match scan_state {
+                                    ScanState::Idle => d.colors.text_secondary,
+                                    ScanState::Scanning => d.colors.accent_orange,
+                                    ScanState::Complete => d.colors.accent_green,
+                                },
+                            ))
+                            .child(Self::status_callout(
+                                d,
+                                "Artifacts",
+                                &format!("{} Found", format_number(progress_items)),
+                                d.colors.text_primary,
+                            )),
                     )
+                    .child(if scan_state == ScanState::Complete {
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .gap(px(8.0))
+                            .child(Self::terminal_button(
+                                d,
+                                "dashboard-cta",
+                                center_button_label,
+                                true,
+                                true,
+                                cx.listener(move |this, _, _, cx| {
+                                    this.navigate_to_view(SidebarView::Results, cx);
+                                }),
+                            ))
+                            .child(Self::terminal_button(
+                                d,
+                                "dashboard-rescan",
+                                "Rescan",
+                                true,
+                                false,
+                                cx.listener(move |_, _, _, cx| {
+                                    app_rescan.update(cx, |app, cx| app.start_scan(cx));
+                                }),
+                            ))
+                    } else {
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(Self::terminal_button(
+                                d,
+                                "dashboard-cta",
+                                center_button_label,
+                                button_enabled,
+                                true,
+                                cx.listener(move |this, _, _, cx| match scan_state {
+                                    ScanState::Idle => {
+                                        app_scan.update(cx, |app, cx| app.start_scan(cx));
+                                    }
+                                    ScanState::Scanning => {}
+                                    ScanState::Complete => {
+                                        this.navigate_to_view(SidebarView::Results, cx);
+                                    }
+                                }),
+                            ))
+                    })
                     .child(
                         div()
-                            .text_size(d.typography.size_xs)
-                            .text_color(d.colors.text_tertiary)
-                            .child("REF: [H9-H10]"),
+                            .flex()
+                            .flex_wrap()
+                            .justify_center()
+                            .items_center()
+                            .gap(px(36.0))
+                            .child(
+                                div()
+                                    .text_size(d.typography.size_xs)
+                                    .text_color(d.colors.text_tertiary)
+                                    .child("CMD: artifact.exe --full-scan"),
+                            )
+                            .child(
+                                div()
+                                    .text_size(d.typography.size_xs)
+                                    .text_color(d.colors.text_tertiary)
+                                    .child("REF: [H9-H10]"),
+                            ),
                     ),
             );
 
@@ -1290,7 +1320,7 @@ impl ArtifactView {
             .child(Self::panel(
                 d,
                 "Session_Metrics",
-                "real // data",
+                "",
                 div()
                     .flex_shrink_0()
                     .px(px(16.0))
