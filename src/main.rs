@@ -19,10 +19,10 @@ use view::ArtifactView;
 
 #[cfg(target_os = "macos")]
 fn set_dock_icon() {
-    use std::ffi::c_void;
     use objc2::rc::{Allocated, Retained};
     use objc2::runtime::AnyObject;
     use objc2::{class, msg_send};
+    use std::ffi::c_void;
 
     const APP_ICON: &[u8] = include_bytes!("../assets/app-icon.png");
 
@@ -87,7 +87,7 @@ fn main() -> anyhow::Result<()> {
 
         let app_model = ArtifactApp::new(config.clone(), cx);
 
-        cx.open_window(
+        if let Err(e) = cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(Bounds {
                     origin: Point {
@@ -105,8 +105,10 @@ fn main() -> anyhow::Result<()> {
                 ..Default::default()
             },
             move |window, cx| cx.new(|cx| ArtifactView::new(app_model.clone(), window, cx)),
-        )
-        .expect("Failed to open window");
+        ) {
+            tracing::error!("Failed to open window: {}", e);
+            cx.quit();
+        }
     });
 
     info!("Application shutdown normally");

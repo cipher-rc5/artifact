@@ -3,6 +3,21 @@
 All notable changes to ARTIFACT are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [Unreleased]
+
+### Added
+- Pre-delete manifests for cleanup operations.
+- Deletion path revalidation before filesystem mutation.
+- CI platform matrix, release checksums, SBOM generation, and provenance attestation hooks.
+- Production operation docs for recovery, safe defaults, config, privacy, accessibility, and release requirements.
+- Scanner benchmark coverage.
+
+### Changed
+- Documented Rust 1.95 as the supported minimum toolchain.
+- Result caps are applied after sorting so the largest artifacts are retained.
+- Marker-required orphan matching is explicit per rule, keeping generic directory names conservative.
+- Minimum window size lowered for better small-display usability.
+
 ## [0.1.0] — 2026-05-05
 
 ### Added

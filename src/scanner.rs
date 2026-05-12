@@ -12,10 +12,10 @@
 //     loop, plus one event when each artifact is added.
 
 use std::cmp::Reverse;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use jwalk::WalkDirGeneric;
@@ -37,6 +37,12 @@ pub struct Scanner {
     root: PathBuf,
     enabled_rules: Vec<&'static ArtifactRule>,
     max_results: Option<usize>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RuleMatch {
+    rule: &'static ArtifactRule,
+    is_orphaned: bool,
 }
 
 impl Scanner {
@@ -136,8 +142,7 @@ impl Scanner {
         // Collected matches, one entry per detected artifact root. A Mutex is
         // fine here: jwalk only contends on it when a rule actually matches,
         // which is rare relative to the number of directories visited.
-        let matches: Arc<Mutex<Vec<(PathBuf, &'static ArtifactRule)>>> =
-            Arc::new(Mutex::new(Vec::new()));
+        let matches: Arc<Mutex<Vec<(PathBuf, RuleMatch)>>> = Arc::new(Mutex::new(Vec::new()));
 
         let last_progress = Arc::new(Mutex::new(Instant::now()));
         let on_progress = Arc::new(on_progress);
@@ -177,13 +182,9 @@ impl Scanner {
         }
 
         // Size each match in parallel.
-        let raw_matches: Vec<(PathBuf, &'static ArtifactRule)> = {
+        let raw_matches: Vec<(PathBuf, RuleMatch)> = {
             let mut guard = matches.lock();
-            let mut taken = std::mem::take(&mut *guard);
-            if let Some(limit) = max_results {
-                taken.truncate(limit);
-            }
-            taken
+            std::mem::take(&mut *guard)
         };
         info!(
             "Discovered {} candidate directories; sizing",
@@ -193,7 +194,7 @@ impl Scanner {
         let mut results: Vec<DirectoryItem> = Vec::with_capacity(raw_matches.len());
         let final_dirs = dirs_scanned.load(Ordering::Relaxed);
 
-        for (path, rule) in raw_matches {
+        for (path, rule_match) in raw_matches {
             on_progress(
                 final_dirs,
                 results.len(),
@@ -201,7 +202,7 @@ impl Scanner {
                 total_size_found.load(Ordering::Relaxed),
             );
 
-            if let Some(item) = build_item(path, rule) {
+            if let Some(item) = build_item(path, rule_match) {
                 total_size_found.fetch_add(item.size_bytes, Ordering::Relaxed);
                 let path_str = item.path.display().to_string();
                 results.push(item);
@@ -222,6 +223,9 @@ impl Scanner {
         );
 
         results.sort_by_key(|b| Reverse(b.size_bytes));
+        if let Some(limit) = max_results {
+            results.truncate(limit);
+        }
         info!(
             "Scan complete: found {} directories ({} dirs visited)",
             results.len(),
@@ -237,6 +241,7 @@ impl Scanner {
         let count = Arc::new(AtomicUsize::new(0));
         let enabled = self.enabled_rules.clone();
         let count_clone = Arc::clone(&count);
+        let marker_cache = Arc::new(Mutex::new(HashMap::new()));
 
         let walker = WalkDirGeneric::<((), ())>::new(&self.root)
             .follow_links(false)
@@ -264,7 +269,10 @@ impl Scanner {
                             return false;
                         }
                         rule.markers.is_empty()
-                            || rule.markers.iter().any(|m| has_marker(parent_path, m))
+                            || rule
+                                .markers
+                                .iter()
+                                .any(|m| has_marker_cached(parent_path, m, marker_cache.as_ref()))
                     });
                     if matched {
                         entry.read_children_path = None;
@@ -278,10 +286,11 @@ impl Scanner {
 
     fn build_walker(
         &self,
-        matches: Arc<Mutex<Vec<(PathBuf, &'static ArtifactRule)>>>,
+        matches: Arc<Mutex<Vec<(PathBuf, RuleMatch)>>>,
         dirs_scanned: Arc<AtomicUsize>,
     ) -> WalkDirGeneric<((), ())> {
         let enabled = self.enabled_rules.clone();
+        let marker_cache = Arc::new(Mutex::new(HashMap::new()));
 
         WalkDirGeneric::<((), ())>::new(&self.root)
             .follow_links(false)
@@ -314,17 +323,11 @@ impl Scanner {
                         if rule.dir_name != name_owned {
                             return None;
                         }
-                        if rule.markers.is_empty()
-                            || rule.markers.iter().any(|m| has_marker(parent_path, m))
-                        {
-                            Some(*rule)
-                        } else {
-                            None
-                        }
+                        match_rule(parent_path, rule, marker_cache.as_ref())
                     });
-                    if let Some(rule) = matched {
+                    if let Some(rule_match) = matched {
                         let path = entry.path();
-                        matches.lock().push((path, rule));
+                        matches.lock().push((path, rule_match));
                         // Don't walk into matched artifacts during the outer
                         // traversal — sizing handles their interior.
                         entry.read_children_path = None;
@@ -332,6 +335,118 @@ impl Scanner {
                 }
             })
     }
+}
+
+pub fn validate_artifact_path(
+    path: &Path,
+    expected_rule_name: &str,
+    expected_orphaned: bool,
+) -> Result<()> {
+    if !path.exists() {
+        return Err(ArtifactError::Scan(format!(
+            "Path no longer exists: {}",
+            path.display()
+        )));
+    }
+    let meta = std::fs::symlink_metadata(path)?;
+    if meta.file_type().is_symlink() {
+        return Err(ArtifactError::Scan(format!(
+            "Refusing symlink path: {}",
+            path.display()
+        )));
+    }
+    if !meta.is_dir() {
+        return Err(ArtifactError::Scan(format!(
+            "Path is no longer a directory: {}",
+            path.display()
+        )));
+    }
+
+    let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+        return Err(ArtifactError::Path(format!(
+            "Path has no directory name: {}",
+            path.display()
+        )));
+    };
+    let Some(parent) = path.parent() else {
+        return Err(ArtifactError::Path(format!(
+            "Path has no parent: {}",
+            path.display()
+        )));
+    };
+    let Some(rule) = rules::find(expected_rule_name) else {
+        return Err(ArtifactError::Scan(format!(
+            "Unknown artifact rule: {}",
+            expected_rule_name
+        )));
+    };
+    if rule.dir_name != name {
+        return Err(ArtifactError::Scan(format!(
+            "Directory name no longer matches rule {}: {}",
+            expected_rule_name,
+            path.display()
+        )));
+    }
+
+    let cache = Mutex::new(HashMap::new());
+    let Some(rule_match) = match_rule(parent, rule, &cache) else {
+        return Err(ArtifactError::Scan(format!(
+            "Path no longer satisfies rule {}: {}",
+            expected_rule_name,
+            path.display()
+        )));
+    };
+    if rule_match.is_orphaned != expected_orphaned {
+        return Err(ArtifactError::Scan(format!(
+            "Path orphan status changed before delete: {}",
+            path.display()
+        )));
+    }
+    Ok(())
+}
+
+fn match_rule(
+    parent_path: &Path,
+    rule: &'static ArtifactRule,
+    marker_cache: &Mutex<HashMap<(PathBuf, &'static str), bool>>,
+) -> Option<RuleMatch> {
+    if rule.markers.is_empty() {
+        return Some(RuleMatch {
+            rule,
+            is_orphaned: false,
+        });
+    }
+    let has_any_marker = rule
+        .markers
+        .iter()
+        .any(|m| has_marker_cached(parent_path, m, marker_cache));
+    if has_any_marker {
+        return Some(RuleMatch {
+            rule,
+            is_orphaned: false,
+        });
+    }
+    if rule.allow_orphan_without_marker {
+        return Some(RuleMatch {
+            rule,
+            is_orphaned: true,
+        });
+    }
+    None
+}
+
+fn has_marker_cached(
+    parent: &Path,
+    marker: &'static str,
+    marker_cache: &Mutex<HashMap<(PathBuf, &'static str), bool>>,
+) -> bool {
+    let key = (parent.to_path_buf(), marker);
+    if let Some(value) = marker_cache.lock().get(&key).copied() {
+        return value;
+    }
+    let value = has_marker(parent, marker);
+    marker_cache.lock().insert(key, value);
+    value
 }
 
 /// Test whether `parent` contains a sibling matching `marker`. Marker tokens
@@ -353,7 +468,7 @@ fn has_marker(parent: &Path, marker: &str) -> bool {
     parent.join(marker).exists()
 }
 
-fn build_item(path: PathBuf, rule: &'static ArtifactRule) -> Option<DirectoryItem> {
+fn build_item(path: PathBuf, rule_match: RuleMatch) -> Option<DirectoryItem> {
     let size = parallel_dir_size(&path);
     let last_modified = std::fs::metadata(&path)
         .ok()
@@ -365,25 +480,14 @@ fn build_item(path: PathBuf, rule: &'static ArtifactRule) -> Option<DirectoryIte
         .and_then(|p| p.file_name())
         .map(|n| n.to_string_lossy().to_string());
 
-    // A match is "orphaned" if none of its declared markers exist anymore
-    // (e.g. someone deleted the source project but left node_modules behind).
-    // Rules without markers are never orphaned by this definition.
-    let is_orphaned = if rule.markers.is_empty() {
-        false
-    } else {
-        path.parent()
-            .map(|p| !rule.markers.iter().any(|m| has_marker(p, m)))
-            .unwrap_or(true)
-    };
-
     Some(DirectoryItem::new(
         path,
-        DirectoryType::new(rule),
+        DirectoryType::new(rule_match.rule),
         size,
         last_modified,
         project_root,
         project_name,
-        is_orphaned,
+        rule_match.is_orphaned,
     ))
 }
 
@@ -430,7 +534,10 @@ mod tests {
         fs::create_dir_all(project.join("node_modules").join("some_pkg")).unwrap();
         fs::write(project.join("package.json"), b"{}").unwrap();
         fs::write(
-            project.join("node_modules").join("some_pkg").join("index.js"),
+            project
+                .join("node_modules")
+                .join("some_pkg")
+                .join("index.js"),
             b"module.exports = {};",
         )
         .unwrap();
@@ -440,7 +547,11 @@ mod tests {
         let project = base.join("rustproject");
         fs::create_dir_all(project.join("target").join("debug")).unwrap();
         fs::write(project.join("Cargo.toml"), b"[package]\nname = \"test\"").unwrap();
-        fs::write(project.join("target").join("debug").join("binary"), b"\x7fELF").unwrap();
+        fs::write(
+            project.join("target").join("debug").join("binary"),
+            b"\x7fELF",
+        )
+        .unwrap();
     }
 
     #[test]
@@ -452,10 +563,13 @@ mod tests {
         let scanner = Scanner::new(root);
         let results = scanner.scan().unwrap();
 
-        let found = results.iter().any(|item| {
-            item.path.ends_with("node_modules")
-        });
-        assert!(found, "expected node_modules to be detected; got: {results:?}");
+        let found = results
+            .iter()
+            .any(|item| item.path.ends_with("node_modules"));
+        assert!(
+            found,
+            "expected node_modules to be detected; got: {results:?}"
+        );
     }
 
     #[test]
@@ -468,7 +582,10 @@ mod tests {
         let results = scanner.scan().unwrap();
 
         let found = results.iter().any(|item| item.path.ends_with("target"));
-        assert!(found, "expected Rust target/ to be detected; got: {results:?}");
+        assert!(
+            found,
+            "expected Rust target/ to be detected; got: {results:?}"
+        );
     }
 
     #[test]
@@ -482,7 +599,10 @@ mod tests {
 
         let scanner = Scanner::with_enabled(root, ["rust_target"]);
         let results = scanner.scan().unwrap();
-        assert!(results.is_empty(), "should not match target/ without Cargo.toml; got: {results:?}");
+        assert!(
+            results.is_empty(),
+            "should not match target/ without Cargo.toml; got: {results:?}"
+        );
     }
 
     #[test]
@@ -533,22 +653,28 @@ mod tests {
     }
 
     #[test]
-    fn orphan_detection_marks_orphaned_correctly() {
+    fn orphan_detection_marks_node_modules_without_marker_orphaned() {
         let tmp = tempfile::tempdir().unwrap();
         let root = scan_root(&tmp);
-        // node_modules/ without package.json → should NOT match (marker required)
         let project = root.join("orphan_project");
         fs::create_dir_all(project.join("node_modules")).unwrap();
-        // No package.json!
 
         let scanner = Scanner::new(root);
         let results = scanner.scan().unwrap();
 
-        // node_modules without package.json marker should not match
-        assert!(
-            results.is_empty(),
-            "node_modules without package.json marker should not match"
-        );
+        assert_eq!(results.len(), 1);
+        assert!(results[0].is_orphaned);
+    }
+
+    #[test]
+    fn generic_target_without_marker_is_not_orphan_matched() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = scan_root(&tmp);
+        fs::create_dir_all(root.join("not_rust").join("target")).unwrap();
+
+        let scanner = Scanner::with_enabled(root, ["rust_target"]);
+        let results = scanner.scan().unwrap();
+        assert!(results.is_empty(), "generic target should remain excluded");
     }
 
     #[test]
@@ -578,5 +704,41 @@ mod tests {
         // Create it
         fs::write(parent.join("Cargo.toml"), b"[package]").unwrap();
         assert!(has_marker(parent, "Cargo.toml"));
+    }
+
+    #[test]
+    fn max_results_keeps_largest_artifacts() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = scan_root(&tmp);
+        for (name, size) in [("small", 1), ("large", 1024), ("medium", 16)] {
+            let project = root.join(name);
+            fs::create_dir_all(project.join("node_modules")).unwrap();
+            fs::write(project.join("package.json"), b"{}").unwrap();
+            fs::write(project.join("node_modules").join("blob"), vec![b'x'; size]).unwrap();
+        }
+
+        let results = Scanner::new(root).with_max_results(2).scan().unwrap();
+        assert_eq!(results.len(), 2);
+        let names: Vec<_> = results
+            .iter()
+            .filter_map(|item| item.project_name.as_deref())
+            .collect();
+        assert!(names.contains(&"large"));
+        assert!(names.contains(&"medium"));
+    }
+
+    #[test]
+    fn validate_artifact_path_rejects_changed_rule_state() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = scan_root(&tmp);
+        let project = root.join("myproject");
+        fs::create_dir_all(project.join("node_modules")).unwrap();
+        fs::write(project.join("package.json"), b"{}").unwrap();
+
+        validate_artifact_path(&project.join("node_modules"), "node_modules", false).unwrap();
+        fs::remove_file(project.join("package.json")).unwrap();
+        assert!(
+            validate_artifact_path(&project.join("node_modules"), "node_modules", false).is_err()
+        );
     }
 }

@@ -1,14 +1,2 @@
-[advisories]
-ignore = [
-  # async-std discontinued — transitive via gpui → http_client → async-tar.
-  # No replacement available upstream; gpui owns this dep chain.
-  "RUSTSEC-2025-0052",
-
-  # instant unmaintained — transitive via gpui → util → futures-lite → fastrand.
-  # No replacement available upstream; gpui owns this dep chain.
-  "RUSTSEC-2024-0384",
-
-  # paste unmaintained — transitive via gpui → image/metal.
-  # No replacement available upstream; gpui owns this dep chain.
-  "RUSTSEC-2024-0436",
-]
+# cargo-audit policy is centralized at ../audit.toml.
+# Keep this pointer so developers do not maintain divergent advisory ignores.

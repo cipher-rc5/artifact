@@ -13,7 +13,11 @@ env:
 jobs:
   check:
     name: Check & Test
-    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
@@ -46,6 +50,13 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: cargo audit
+        if: matrix.os == 'ubuntu-latest'
         run: |
           cargo install cargo-audit --locked --quiet
-          cargo audit --ignore RUSTSEC-2025-0134
+          cargo audit --ignore RUSTSEC-2025-0134 --ignore RUSTSEC-2025-0052 --ignore RUSTSEC-2024-0384 --ignore RUSTSEC-2024-0436
+
+      - name: cargo deny
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          cargo install cargo-deny --locked --quiet
+          cargo deny check

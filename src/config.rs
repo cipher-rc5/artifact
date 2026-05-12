@@ -75,9 +75,9 @@ pub struct UiConfig {
 }
 
 /// Minimum window width in logical pixels.
-pub const MIN_WINDOW_WIDTH: f32 = 1220.0;
+pub const MIN_WINDOW_WIDTH: f32 = 1024.0;
 /// Minimum window height in logical pixels.
-pub const MIN_WINDOW_HEIGHT: f32 = 860.0;
+pub const MIN_WINDOW_HEIGHT: f32 = 720.0;
 
 fn default_window_width() -> f32 {
     1280.0
@@ -125,7 +125,7 @@ impl Default for LoggingConfig {
     fn default() -> Self {
         Self {
             log_level: default_log_level(),
-            log_to_file: false,
+            log_to_file: true,
             log_to_stdout: true,
             json_format: false,
         }
@@ -237,7 +237,7 @@ mod tests {
         assert_eq!(config.ui.window_width, 1280.0);
         assert_eq!(config.ui.window_height, 860.0);
         assert_eq!(config.logging.log_level, "info");
-        assert!(!config.logging.log_to_file);
+        assert!(config.logging.log_to_file);
         assert!(config.logging.log_to_stdout);
         assert_eq!(config.scan.max_results, 10_000);
     }

@@ -8,7 +8,7 @@ database so repeated scans are fast.
 
 - **UI** — [gpui](https://crates.io/crates/gpui) (Zed's GPU-accelerated framework)
 - **Storage** — [redb](https://crates.io/crates/redb) + [rkyv](https://crates.io/crates/rkyv) zero-copy records
-- **Scanning** — [walkdir](https://crates.io/crates/walkdir) on a `num_cpus`-sized thread pool
+- **Scanning** — [jwalk](https://crates.io/crates/jwalk) parallel traversal with rule-based pruning and bounded result collection
 - **Logging** — [tracing](https://crates.io/crates/tracing) with rolling file output
 - **Config** — TOML, loaded from the platform user-config dir via [dirs](https://crates.io/crates/dirs)
 
@@ -16,7 +16,7 @@ See [`Cargo.toml`](./Cargo.toml) for the annotated dependency list.
 
 ## Requirements
 
-- Rust 1.85+ (edition 2024, minimum toolchain 1.85)
+- Rust 1.95+ (edition 2024, minimum toolchain 1.95)
 - macOS, Linux, or Windows
 
 For distribution / cross-compilation:
@@ -34,6 +34,18 @@ just check          # cargo check --all-targets
 just fmt            # cargo fmt --all
 just clippy         # cargo clippy --all-targets -- -D warnings
 ```
+
+## Safety Model
+
+ARTIFACT defaults to moving artifacts to Trash. Permanent deletion is available
+only as an explicit mode and performs a higher-friction confirmation, writes a
+pre-delete manifest, revalidates each selected path immediately before removal,
+and refuses symlink targets. Generated manifests are written under the app data
+directory next to the redb database.
+
+See [`docs/safe-defaults.md`](./docs/safe-defaults.md),
+[`docs/config-reference.md`](./docs/config-reference.md), and
+[`docs/recovery.md`](./docs/recovery.md) for production-operation details.
 
 `just` with no args lists every recipe.
 

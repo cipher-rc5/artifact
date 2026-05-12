@@ -46,7 +46,12 @@ strip = "symbols" # Drop debug symbols from the binary.
 panic = "abort" # No unwinding tables — smaller binary; we don't catch_unwind.
 
 [dev-dependencies]
+criterion = { version = "0.7", features = ["html_reports"] }
 tempfile = "3"
+
+[[bench]]
+name = "scanner_bench"
+harness = false
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6" # Objective-C runtime bridge for dock icon setup.

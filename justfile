@@ -5,10 +5,9 @@
 
 set shell := ["bash", "-cu"]
 
-# Pinned tool versions (tested against):
-#   zig       0.14.0   (brew install zig; verify with `zig version`)
-#   cargo-zigbuild  0.19.8   (cargo install cargo-zigbuild --version 0.19.8 --locked)
-#   just      1.40.0   (brew install just; verify with `just --version`)
+zig_version := "0.14.0"
+cargo_zigbuild_version := "0.19.8"
+just_version := "1.40.0"
 
 bin := "artifact"
 dist := "target/dist"
@@ -40,7 +39,10 @@ clippy:
 # Audit dependencies for vulnerabilities.
 # RUSTSEC-2025-0134 (rustls-pemfile unmaintained) is ignored — see audit.toml for rationale.
 audit:
-    cargo audit --ignore RUSTSEC-2025-0134
+    cargo audit --ignore RUSTSEC-2025-0134 --ignore RUSTSEC-2025-0052 --ignore RUSTSEC-2024-0384 --ignore RUSTSEC-2024-0436
+
+deny:
+    cargo deny check
 
 # --- Distribution builds (cargo-zigbuild) --------------------------------
 
@@ -83,6 +85,15 @@ package: build-all
     cd {{dist}} && tar -czf {{bin}}-linux-x86_64.tar.gz {{bin}}-linux-x86_64
     cd {{dist}} && tar -czf {{bin}}-linux-aarch64.tar.gz {{bin}}-linux-aarch64
     cd {{dist}} && zip -q {{bin}}-windows-x86_64.zip {{bin}}-windows-x86_64.exe
+
+# Generate release checksums.
+checksums:
+    cd {{dist}} && shasum -a 256 * > SHA256SUMS
+
+# Generate a minimal dependency inventory from Cargo metadata.
+sbom:
+    mkdir -p {{dist}}
+    cargo metadata --locked --format-version 1 > {{dist}}/artifact-cargo-metadata-sbom.json
 
 # Wipe build outputs.
 clean:

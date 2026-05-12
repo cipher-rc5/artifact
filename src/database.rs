@@ -30,6 +30,7 @@ const IDX_DIR_TYPE: TableDefinition<(&str, u64), ()> = TableDefinition::new("idx
 // Single-row table holding the next id to assign.
 const META: TableDefinition<&str, u64> = TableDefinition::new("meta");
 const META_NEXT_ID: &str = "next_id";
+const META_SCHEMA_VERSION: &str = "schema_version";
 
 /// A record of a single directory deletion, persisted to the redb database.
 ///
@@ -76,8 +77,7 @@ impl DeletionRecord {
 
         let metadata = format!(
             r#"{{"version":{},"hostname":{}}}"#,
-            SCHEMA_VERSION,
-            hostname_val
+            SCHEMA_VERSION, hostname_val
         );
 
         Self {
@@ -155,7 +155,21 @@ impl DeletionDatabase {
         let _ = write_txn.open_table(RECORDS)?;
         let _ = write_txn.open_table(IDX_DELETED_AT)?;
         let _ = write_txn.open_table(IDX_DIR_TYPE)?;
-        let _ = write_txn.open_table(META)?;
+        {
+            let mut meta = write_txn.open_table(META)?;
+            let stored_version = meta.get(META_SCHEMA_VERSION)?.map(|v| v.value());
+            match stored_version {
+                Some(version) if version == SCHEMA_VERSION as u64 => {}
+                Some(version) => {
+                    return Err(ArtifactError::DatabaseInit(format!(
+                        "Unsupported database schema version {version}; expected {SCHEMA_VERSION}"
+                    )));
+                }
+                None => {
+                    meta.insert(META_SCHEMA_VERSION, SCHEMA_VERSION as u64)?;
+                }
+            }
+        }
         write_txn.commit()?;
 
         debug!("Schema initialized successfully");
@@ -497,5 +511,35 @@ mod tests {
         let stats = db.get_deletion_statistics().unwrap();
         assert_eq!(stats.total_deletions, 0);
         assert_eq!(stats.total_space_freed, 0);
+    }
+
+    #[test]
+    fn rejects_unsupported_schema_version() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join(DB_FILE);
+        let raw = Database::create(&db_path).unwrap();
+        let txn = raw.begin_write().unwrap();
+        {
+            let mut meta = txn.open_table(META).unwrap();
+            meta.insert(META_SCHEMA_VERSION, 999).unwrap();
+        }
+        txn.commit().unwrap();
+        drop(raw);
+
+        let err = match DeletionDatabase::new(Some(tmp.path().to_path_buf())) {
+            Ok(_) => panic!("unsupported schema version should fail"),
+            Err(err) => err,
+        };
+        assert!(
+            err.to_string()
+                .contains("Unsupported database schema version")
+        );
+    }
+
+    #[test]
+    fn corrupt_database_file_returns_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join(DB_FILE), b"not a redb database").unwrap();
+        assert!(DeletionDatabase::new(Some(tmp.path().to_path_buf())).is_err());
     }
 }

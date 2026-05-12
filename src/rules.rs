@@ -16,6 +16,13 @@ pub enum ColorHint {
     Red,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuleConfidence {
+    High,
+    Medium,
+    Low,
+}
+
 #[derive(Debug)]
 pub struct ArtifactRule {
     /// Stable identifier — also used as the database string key for this kind.
@@ -29,6 +36,11 @@ pub struct ArtifactRule {
     pub markers: &'static [&'static str],
     /// Suggested badge color in the UI.
     pub color_hint: ColorHint,
+    /// Confidence that a matched directory is disposable generated output.
+    pub confidence: RuleConfidence,
+    /// Whether a marker-required rule can still be shown as orphaned when its
+    /// marker is missing. Keep this false for generic directory names.
+    pub allow_orphan_without_marker: bool,
 }
 
 impl PartialEq for ArtifactRule {
@@ -47,6 +59,8 @@ pub static RULES: &[ArtifactRule] = &[
         dir_name: "node_modules",
         markers: &["package.json"],
         color_hint: ColorHint::Green,
+        confidence: RuleConfidence::High,
+        allow_orphan_without_marker: true,
     },
     ArtifactRule {
         name: "rust_target",
@@ -54,13 +68,17 @@ pub static RULES: &[ArtifactRule] = &[
         dir_name: "target",
         markers: &["Cargo.toml"],
         color_hint: ColorHint::Orange,
+        confidence: RuleConfidence::High,
+        allow_orphan_without_marker: false,
     },
     ArtifactRule {
         name: "python_venv",
         language: "Python",
         dir_name: ".venv",
-        markers: &[],
+        markers: &["pyproject.toml", "requirements.txt", "setup.py"],
         color_hint: ColorHint::Blue,
+        confidence: RuleConfidence::Medium,
+        allow_orphan_without_marker: false,
     },
     ArtifactRule {
         name: "python_venv_alt",
@@ -68,6 +86,8 @@ pub static RULES: &[ArtifactRule] = &[
         dir_name: "venv",
         markers: &["pyproject.toml", "requirements.txt", "setup.py"],
         color_hint: ColorHint::Blue,
+        confidence: RuleConfidence::Medium,
+        allow_orphan_without_marker: false,
     },
     ArtifactRule {
         name: "pycache",
@@ -75,6 +95,8 @@ pub static RULES: &[ArtifactRule] = &[
         dir_name: "__pycache__",
         markers: &[],
         color_hint: ColorHint::Blue,
+        confidence: RuleConfidence::Medium,
+        allow_orphan_without_marker: false,
     },
     ArtifactRule {
         name: "next_cache",
@@ -82,6 +104,8 @@ pub static RULES: &[ArtifactRule] = &[
         dir_name: ".next",
         markers: &["package.json"],
         color_hint: ColorHint::Purple,
+        confidence: RuleConfidence::High,
+        allow_orphan_without_marker: false,
     },
     ArtifactRule {
         name: "nuxt_cache",
@@ -89,6 +113,8 @@ pub static RULES: &[ArtifactRule] = &[
         dir_name: ".nuxt",
         markers: &["package.json"],
         color_hint: ColorHint::Purple,
+        confidence: RuleConfidence::High,
+        allow_orphan_without_marker: false,
     },
     ArtifactRule {
         name: "parcel_cache",
@@ -96,6 +122,8 @@ pub static RULES: &[ArtifactRule] = &[
         dir_name: ".parcel-cache",
         markers: &["package.json"],
         color_hint: ColorHint::Purple,
+        confidence: RuleConfidence::High,
+        allow_orphan_without_marker: false,
     },
     ArtifactRule {
         name: "gradle_cache",
@@ -103,6 +131,8 @@ pub static RULES: &[ArtifactRule] = &[
         dir_name: ".gradle",
         markers: &["build.gradle", "build.gradle.kts", "settings.gradle"],
         color_hint: ColorHint::Yellow,
+        confidence: RuleConfidence::High,
+        allow_orphan_without_marker: false,
     },
     ArtifactRule {
         name: "dotnet_bin",
@@ -110,6 +140,8 @@ pub static RULES: &[ArtifactRule] = &[
         dir_name: "bin",
         markers: &[".csproj", ".sln", ".fsproj"],
         color_hint: ColorHint::Purple,
+        confidence: RuleConfidence::Medium,
+        allow_orphan_without_marker: false,
     },
     ArtifactRule {
         name: "dotnet_obj",
@@ -117,6 +149,8 @@ pub static RULES: &[ArtifactRule] = &[
         dir_name: "obj",
         markers: &[".csproj", ".sln", ".fsproj"],
         color_hint: ColorHint::Purple,
+        confidence: RuleConfidence::Medium,
+        allow_orphan_without_marker: false,
     },
     ArtifactRule {
         name: "elixir_build",
@@ -124,6 +158,8 @@ pub static RULES: &[ArtifactRule] = &[
         dir_name: "_build",
         markers: &["mix.exs"],
         color_hint: ColorHint::Purple,
+        confidence: RuleConfidence::High,
+        allow_orphan_without_marker: false,
     },
     ArtifactRule {
         name: "elixir_deps",
@@ -131,6 +167,8 @@ pub static RULES: &[ArtifactRule] = &[
         dir_name: "deps",
         markers: &["mix.exs"],
         color_hint: ColorHint::Purple,
+        confidence: RuleConfidence::High,
+        allow_orphan_without_marker: false,
     },
     ArtifactRule {
         name: "composer_vendor",
@@ -138,6 +176,8 @@ pub static RULES: &[ArtifactRule] = &[
         dir_name: "vendor",
         markers: &["composer.json"],
         color_hint: ColorHint::Yellow,
+        confidence: RuleConfidence::High,
+        allow_orphan_without_marker: false,
     },
     ArtifactRule {
         name: "xcode_derived",
@@ -145,13 +185,17 @@ pub static RULES: &[ArtifactRule] = &[
         dir_name: "DerivedData",
         markers: &[],
         color_hint: ColorHint::Red,
+        confidence: RuleConfidence::Low,
+        allow_orphan_without_marker: false,
     },
     ArtifactRule {
         name: "terraform_cache",
         language: "Terraform",
         dir_name: ".terraform",
-        markers: &[],
+        markers: &[".tf"],
         color_hint: ColorHint::Yellow,
+        confidence: RuleConfidence::High,
+        allow_orphan_without_marker: false,
     },
 ];
 
@@ -208,8 +252,34 @@ mod tests {
     fn all_rules_have_nonempty_name_and_dir() {
         for rule in RULES {
             assert!(!rule.name.is_empty(), "rule has empty name");
-            assert!(!rule.dir_name.is_empty(), "rule {} has empty dir_name", rule.name);
-            assert!(!rule.language.is_empty(), "rule {} has empty language", rule.name);
+            assert!(
+                !rule.dir_name.is_empty(),
+                "rule {} has empty dir_name",
+                rule.name
+            );
+            assert!(
+                !rule.language.is_empty(),
+                "rule {} has empty language",
+                rule.name
+            );
+        }
+    }
+
+    #[test]
+    fn generic_rules_do_not_allow_orphan_without_marker() {
+        for name in ["rust_target", "dotnet_bin", "dotnet_obj", "python_venv_alt"] {
+            let rule = find(name).unwrap();
+            assert!(!rule.allow_orphan_without_marker, "{name} is too generic");
+        }
+    }
+
+    #[test]
+    fn rules_declare_confidence() {
+        for rule in RULES {
+            assert!(matches!(
+                rule.confidence,
+                RuleConfidence::High | RuleConfidence::Medium | RuleConfidence::Low
+            ));
         }
     }
 }

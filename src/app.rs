@@ -4,20 +4,21 @@
 
 use gpui::*;
 use parking_lot::Mutex;
+use serde::Serialize;
 use std::collections::{HashSet, VecDeque};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, channel};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tracing::{debug, error, info, warn};
 
 use artifact::config::{AppConfig, DeleteMode};
 use artifact::database::{DeletionDatabase, DeletionRecord};
 use artifact::directory_item::DirectoryItem;
 use artifact::rules;
-use artifact::scanner::Scanner;
+use artifact::scanner::{Scanner, validate_artifact_path};
 use artifact::utils;
 
 // ---------------------------------------------------------------------------
@@ -91,7 +92,27 @@ enum ScanMessage {
 enum DeleteMessage {
     ItemDeleted(PathBuf),
     ItemFailed(String),
-    Complete,
+    Complete { processed: usize },
+}
+
+#[derive(Debug, Serialize)]
+struct DeletionManifest {
+    operation_id: String,
+    created_at: i64,
+    scan_root: String,
+    delete_mode: DeleteMode,
+    total_items: usize,
+    total_bytes: u64,
+    items: Vec<DeletionManifestItem>,
+}
+
+#[derive(Debug, Serialize)]
+struct DeletionManifestItem {
+    path: String,
+    rule_name: String,
+    size_bytes: u64,
+    project_root: Option<String>,
+    is_orphaned: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -235,7 +256,12 @@ impl ArtifactApp {
 const NOTICE_TTL: Duration = Duration::from_secs(8);
 
 impl ArtifactApp {
-    fn set_notice(&mut self, kind: NoticeKind, title: impl Into<String>, message: impl Into<String>) {
+    fn set_notice(
+        &mut self,
+        kind: NoticeKind,
+        title: impl Into<String>,
+        message: impl Into<String>,
+    ) {
         self.notice = Some(StatusNotice {
             kind,
             title: title.into(),
@@ -409,7 +435,11 @@ impl ArtifactApp {
             // than a fixed placeholder. This mirrors the actual walker's
             // filter logic, so the count closely tracks dirs_scanned.
             let total_dirs = scanner.count_directories();
-            let total_dirs_opt = if total_dirs > 0 { Some(total_dirs) } else { None };
+            let total_dirs_opt = if total_dirs > 0 {
+                Some(total_dirs)
+            } else {
+                None
+            };
 
             let tx_cb = tx.clone();
 
@@ -537,7 +567,30 @@ impl ArtifactApp {
             return;
         }
 
-        info!("Spawning background deletion for {} directories", to_delete.len());
+        let operation_id = operation_id();
+        let scan_root = PathBuf::from(&self.scan_path);
+        let manifest = DeletionManifest::new(
+            operation_id.clone(),
+            self.scan_path.clone(),
+            self.config.scan.delete_mode,
+            &to_delete,
+        );
+        if let Err(e) = write_deletion_manifest(&self.config, &manifest) {
+            self.error_message = Some("Could not write deletion manifest".to_string());
+            self.set_notice(
+                NoticeKind::Error,
+                "CLEANUP BLOCKED",
+                format!("Could not write deletion manifest: {}", e),
+            );
+            cx.notify();
+            return;
+        }
+
+        info!(
+            operation_id = %operation_id,
+            "Spawning background deletion for {} directories",
+            to_delete.len()
+        );
 
         let delete_mode = self.config.scan.delete_mode;
         let database = self.database.clone();
@@ -548,10 +601,25 @@ impl ArtifactApp {
         self.delete_receiver = Some(Arc::new(Mutex::new(rx)));
 
         thread::spawn(move || {
+            let mut processed = 0;
             for item in to_delete {
                 debug!("Deleting directory: {}", item.path.display());
+                if let Err(e) = validate_delete_candidate(&scan_root, &item) {
+                    error!(
+                        "Pre-delete validation failed for {}: {}",
+                        item.path.display(),
+                        e
+                    );
+                    let _ = tx.send(DeleteMessage::ItemFailed(format!(
+                        "{}: {}",
+                        item.path.display(),
+                        e
+                    )));
+                    continue;
+                }
                 match utils::remove_directory(&item.path, delete_mode) {
                     Ok(_) => {
+                        processed += 1;
                         info!("Deleted: {}", item.path.display());
                         if let Some(db) = &database {
                             let record = DeletionRecord::new(
@@ -569,13 +637,15 @@ impl ArtifactApp {
                     }
                     Err(e) => {
                         error!("Failed to delete {}: {}", item.path.display(), e);
-                        let _ = tx.send(DeleteMessage::ItemFailed(
-                            format!("{}: {}", item.path.display(), e),
-                        ));
+                        let _ = tx.send(DeleteMessage::ItemFailed(format!(
+                            "{}: {}",
+                            item.path.display(),
+                            e
+                        )));
                     }
                 }
             }
-            let _ = tx.send(DeleteMessage::Complete);
+            let _ = tx.send(DeleteMessage::Complete { processed });
         });
 
         cx.notify();
@@ -606,7 +676,7 @@ impl ArtifactApp {
                     self.delete_errors.push(err);
                     changed = true;
                 }
-                DeleteMessage::Complete => {
+                DeleteMessage::Complete { processed } => {
                     self.is_deleting = false;
                     self.delete_receiver = None;
                     self.total_size = self.directories.iter().map(|d| d.size_bytes).sum();
@@ -621,7 +691,11 @@ impl ArtifactApp {
                         self.set_notice(
                             NoticeKind::Success,
                             "CLEANUP COMPLETE",
-                            format!("{} {} items processed.", action_label, format_number(self.deleted_count)),
+                            format!(
+                                "{} {} items processed.",
+                                action_label,
+                                format_number(processed)
+                            ),
                         );
                     } else {
                         let n = self.delete_errors.len();
@@ -795,6 +869,69 @@ impl ArtifactApp {
     }
 }
 
+impl DeletionManifest {
+    fn new(
+        operation_id: String,
+        scan_root: String,
+        delete_mode: DeleteMode,
+        items: &[DirectoryItem],
+    ) -> Self {
+        let created_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or_default();
+        Self {
+            operation_id,
+            created_at,
+            scan_root,
+            delete_mode,
+            total_items: items.len(),
+            total_bytes: items.iter().map(|item| item.size_bytes).sum(),
+            items: items
+                .iter()
+                .map(|item| DeletionManifestItem {
+                    path: item.path.display().to_string(),
+                    rule_name: item.dir_type.name().to_string(),
+                    size_bytes: item.size_bytes,
+                    project_root: item.project_root.as_ref().map(|p| p.display().to_string()),
+                    is_orphaned: item.is_orphaned,
+                })
+                .collect(),
+        }
+    }
+}
+
+fn operation_id() -> String {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or_default();
+    format!("delete-{nanos}")
+}
+
+fn write_deletion_manifest(config: &AppConfig, manifest: &DeletionManifest) -> anyhow::Result<()> {
+    let dir = config.get_db_path().join("deletion-manifests");
+    std::fs::create_dir_all(&dir)?;
+    let content = toml::to_string_pretty(manifest)?;
+    std::fs::write(dir.join(format!("{}.toml", manifest.operation_id)), content)?;
+    Ok(())
+}
+
+fn validate_delete_candidate(scan_root: &Path, item: &DirectoryItem) -> anyhow::Result<()> {
+    let canonical_root = scan_root
+        .canonicalize()
+        .map_err(|e| anyhow::anyhow!("scan root is no longer accessible: {e}"))?;
+    let canonical_path = item
+        .path
+        .canonicalize()
+        .map_err(|e| anyhow::anyhow!("path is no longer accessible: {e}"))?;
+    if !canonical_path.starts_with(&canonical_root) {
+        anyhow::bail!("path is outside the scanned root: {}", item.path.display());
+    }
+    validate_artifact_path(&item.path, item.dir_type.name(), item.is_orphaned)
+        .map_err(|e| anyhow::anyhow!(e.to_string()))
+}
+
 fn enabled_rules_from_config(config: &AppConfig) -> HashSet<String> {
     let Some(enabled_languages) = config.scan.enabled_languages.as_ref() else {
         return rules::RULES
@@ -878,4 +1015,3 @@ fn group_into_runs(records: Vec<artifact::database::DeletionRecord>) -> Vec<Hist
     }
     runs
 }
-

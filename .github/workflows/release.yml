@@ -9,11 +9,32 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  native-smoke:
+    name: Native Smoke (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Test native build
+        run: cargo test
+
   release:
     name: Build & Release
+    needs: native-smoke
     runs-on: macos-latest
     permissions:
       contents: write
+      id-token: write
+      attestations: write
+    env:
+      APPLE_CODESIGN_IDENTITY: ${{ secrets.APPLE_CODESIGN_IDENTITY }}
     steps:
       - uses: actions/checkout@v4
 
@@ -34,7 +55,7 @@ jobs:
       - name: Install prerequisites
         run: |
           brew install zig just
-          cargo install --locked cargo-zigbuild
+          cargo install --version 0.19.8 --locked cargo-zigbuild
 
       - name: Add cross-compilation targets
         run: just setup-targets
@@ -44,6 +65,22 @@ jobs:
 
       - name: Package artifacts
         run: just package
+
+      - name: Optional macOS codesign
+        if: env.APPLE_CODESIGN_IDENTITY != ''
+        run: |
+          codesign --force --timestamp --options runtime --sign "$APPLE_CODESIGN_IDENTITY" target/dist/artifact-macos-universal
+
+      - name: Generate SBOM
+        run: just sbom
+
+      - name: Generate checksums
+        run: just checksums
+
+      - name: Attest release artifacts
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: "target/dist/*"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2

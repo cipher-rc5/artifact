@@ -164,10 +164,7 @@ impl Gradients {
         linear_gradient(
             165.0,
             linear_color_stop(hsla(220.0 / 360.0, 0.10, 0.10, 1.0), 0.0),
-            linear_color_stop(
-                hsla(theme.accent_green.h, 0.30, 0.05, 1.0),
-                1.0,
-            ),
+            linear_color_stop(hsla(theme.accent_green.h, 0.30, 0.05, 1.0), 1.0),
         )
     }
 
