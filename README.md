@@ -91,6 +91,7 @@ src/
   view.rs            # top-level view
   components.rs      # UI components
   scanner.rs         # filesystem traversal
+  rules.rs           # built-in artifact detection rules
   database.rs        # redb persistence
   config.rs          # TOML config loader
   logging.rs         # tracing-subscriber init
