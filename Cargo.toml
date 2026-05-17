@@ -46,7 +46,7 @@ strip = "symbols" # Drop debug symbols from the binary.
 panic = "abort" # No unwinding tables — smaller binary; we don't catch_unwind.
 
 [dev-dependencies]
-criterion = { version = "0.7", features = ["html_reports"] }
+criterion = { version = "0.8.2", features = ["html_reports"] }
 tempfile = "3"
 
 [[bench]]
