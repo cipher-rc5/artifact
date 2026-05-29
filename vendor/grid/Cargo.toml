@@ -1,0 +1,32 @@
+[package]
+name = "grid"
+version = "0.18.0"
+edition = "2018"
+rust-version = "1.59"
+authors = ["Armin Becher <armin.becher@gmai.com>"]
+description = "Dynamic generic 2D data structure."
+documentation = "https://docs.rs/grid"
+readme = "README.md"
+keywords = ["2D", "array", "matrix", "data-structure", "2D-vector"]
+categories = ["science", "data-structures"]
+license = "MIT"
+repository = "https://github.com/becheran/grid"
+
+# Local fork of grid 0.18.0 with GHSA-38c5-483c-4qqp backported (integer
+# overflow in expand_rows/expand_cols). Used via [patch.crates-io] because the
+# upstream fix only shipped in 1.0.1, which is semver-incompatible with the
+# `grid ^0.18.0` requirement pinned transitively through taffy -> gpui.
+
+[lib]
+name = "grid"
+path = "src/lib.rs"
+
+[features]
+default = ["std"]
+serde = ["std", "dep:serde"]
+std = []
+
+[dependencies.serde]
+version = "1.0.219"
+features = ["derive"]
+optional = true

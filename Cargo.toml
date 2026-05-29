@@ -55,3 +55,11 @@ harness = false
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6" # Objective-C runtime bridge for dock icon setup.
+
+# Security override: the only registry fix for GHSA-38c5-483c-4qqp (integer
+# overflow in grid's expand_rows/expand_cols) shipped in grid 1.0.1, which is
+# semver-incompatible with the `grid ^0.18.0` requirement pinned transitively
+# through taffy -> gpui. This points grid at a local 0.18.0 fork with the fix
+# backported, leaving every other dependency version untouched.
+[patch.crates-io]
+grid = { path = "vendor/grid" }
