@@ -769,7 +769,17 @@ impl ArtifactApp {
 
     pub fn open_file_browser(&mut self, cx: &mut Context<Self>) {
         self.browse_path = PathBuf::from(&self.scan_path);
-        self.browse_back_stack.clear();
+        // Seed the back history with the scan root's ancestor chain so the "<"
+        // button can climb up toward the filesystem root on a fresh open. The
+        // immediate parent sits on top of the stack (popped first), the root at
+        // the bottom; ">" then walks back down toward the scan root.
+        self.browse_back_stack = self
+            .browse_path
+            .ancestors()
+            .skip(1)
+            .map(Path::to_path_buf)
+            .collect();
+        self.browse_back_stack.reverse();
         self.browse_forward_stack.clear();
         self.refresh_browse_entries();
         self.show_file_browser = true;
