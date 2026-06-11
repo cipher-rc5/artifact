@@ -5,7 +5,7 @@ edition = "2024"
 license = "MIT"
 readme = "README.md"
 repository = "https://github.com/cipher-rc5/artifact"
-rust-version = "1.95"
+rust-version = "1.96"
 description = "GPUI-based desktop app for finding and reclaiming disk space."
 
 [dependencies]

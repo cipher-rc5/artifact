@@ -80,7 +80,7 @@ macro_rules! count {
 ///
 /// In this example a grid of numbers from 1 to 9 is created:
 ///
-///  
+///
 /// ```
 /// use grid::grid;
 /// let grid = grid![[1, 2, 3]
@@ -90,7 +90,7 @@ macro_rules! count {
 /// ```
 ///
 /// Note that each row must be of the same length. The following example will not compile:
-///  
+///
 /// ``` ignore
 /// use grid::grid;
 /// let grid = grid![[1, 2, 3]
@@ -527,7 +527,7 @@ impl<T> Grid<T> {
     #[must_use]
     pub unsafe fn get_unchecked(&self, row: impl Into<usize>, col: impl Into<usize>) -> &T {
         let index = self.get_index(row.into(), col.into());
-        self.data.get_unchecked(index)
+        unsafe { self.data.get_unchecked(index) }
     }
 
     /// Returns a mutable reference to an element, without performing bound checks.
@@ -544,7 +544,7 @@ impl<T> Grid<T> {
         col: impl Into<usize>,
     ) -> &mut T {
         let index = self.get_index(row.into(), col.into());
-        self.data.get_unchecked_mut(index)
+        unsafe { self.data.get_unchecked_mut(index) }
     }
 
     /// Access a certain element in the grid.
@@ -1075,7 +1075,7 @@ impl<T> Grid<T> {
     /// ```
     /// use grid::*;
     /// let mut grid = grid![[1,2][3,4][5,6]];
-    /// assert_eq![grid.remove_row(1), Some(vec![3,4])];   
+    /// assert_eq![grid.remove_row(1), Some(vec![3,4])];
     /// assert_eq![grid.remove_row(0), Some(vec![1,2])];
     /// assert_eq![grid.remove_row(0), Some(vec![5,6])];
     /// assert_eq![grid.remove_row(0), None];
