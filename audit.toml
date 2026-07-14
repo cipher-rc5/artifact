@@ -1,16 +1,14 @@
-# Security audit suppression configuration.
+# Security audit suppression configuration — documented record of accepted advisories.
 #
-# This is the SINGLE source of truth for accepted advisories that `cargo audit`
-# consumes: the `just audit` recipe and CI both run `cargo audit --config
-# audit.toml`, so there are no inline `--ignore` flags to keep in sync.
+# `scripts/advisories.json` is the machine-readable SINGLE source of truth: the
+# `just audit` recipe and CI generate `cargo audit --ignore <id>` flags from it
+# (cargo-audit has no `--config` flag). This file and `deny.toml` mirror that
+# list for documentation, and `scripts/check-advisories.py` enforces that (a) no
+# review date has lapsed and (b) all three files list exactly the same advisory
+# IDs. When you add or remove an advisory, update all three or the policy check
+# fails.
 #
-# The machine-readable copy at `scripts/advisories.json` carries the review
-# dates; `scripts/check-advisories.py` enforces that (a) no review date has
-# lapsed and (b) this file and `deny.toml` list exactly the same advisory IDs.
-# When you add or remove an advisory here, update `scripts/advisories.json` and
-# `deny.toml` to match, or the advisory policy check fails.
-#
-# Review by: 2026-08-01 (see scripts/advisories.json).
+# Review by: 2026-08-01 (see scripts/advisories.json for per-advisory dates).
 [advisories]
 ignore = [
   # rustls-pemfile unmaintained — transitive via gpui → gpui_http_client → zed-reqwest.
@@ -28,4 +26,20 @@ ignore = [
   # paste unmaintained — transitive via gpui → image/metal.
   # Review by: 2026-08-01.
   "RUSTSEC-2024-0436",
+
+  # quick-xml quadratic-time DoS — transitive via gpui, semver-locked; artifact
+  # never parses untrusted XML so the surface is unreachable. Review by 2026-08-01.
+  "RUSTSEC-2026-0194",
+
+  # quick-xml unbounded namespace allocation (DoS) — as above. Review by 2026-08-01.
+  "RUSTSEC-2026-0195",
+
+  # proc-macro-error2 unmaintained — build-time-only, transitive via gpui. Review by 2026-08-01.
+  "RUSTSEC-2026-0173",
+
+  # rustybuzz unmaintained — transitive via gpui text-shaping stack. Review by 2026-08-01.
+  "RUSTSEC-2026-0206",
+
+  # ttf-parser unmaintained — transitive via gpui font stack. Review by 2026-08-01.
+  "RUSTSEC-2026-0192",
 ]
