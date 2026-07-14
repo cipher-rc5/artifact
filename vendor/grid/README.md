@@ -9,9 +9,9 @@ Data structure grid for rust. Provide a two dimensional data structure for rust 
 Most of the functionality provided by the [std::vec::Vec](https://doc.rust-lang.org/std/vec/struct.Vec.html) type for one dimensional vectors
 is implemented for two dimensions in this crate.
 
-To use *grid* with *no_std* import the library such as:
+To use _grid_ with _no_std_ import the library such as:
 
-``` toml
+```toml
 grid = { version = "*", default-features = false }
 ```
 

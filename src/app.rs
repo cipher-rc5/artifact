@@ -17,6 +17,7 @@ use tracing::{debug, error, info, warn};
 use artifact::config::{AppConfig, DeleteMode};
 use artifact::database::{DeletionDatabase, DeletionRecord};
 use artifact::directory_item::DirectoryItem;
+use artifact::history::{self, HistoryEntry as CoreHistoryEntry};
 use artifact::rules;
 use artifact::scanner::{Scanner, validate_artifact_path};
 use artifact::utils;
@@ -65,18 +66,22 @@ pub struct StatusNotice {
     pub message: String,
 }
 
-#[derive(Debug, Clone)]
-pub struct HistoryEntry {
-    pub path: String,
-    pub size_bytes: i64,
-    pub deleted_at: i64,
-}
+// History types now live in the testable lib core (`artifact::history`). These
+// re-exports preserve the `crate::app::HistoryRun` / `HistoryEntry` paths the
+// view already imports. `HistoryEntry` is re-exported for the view even though
+// this binary module does not name it directly.
+#[allow(unused_imports)]
+pub use artifact::history::{HistoryEntry, HistoryRun};
 
+/// Detailed record of a single failed deletion (review finding M7). Surfaced to
+/// the view via [`ArtifactApp::delete_errors`] so the UI can show *what* failed
+/// and *why*, not just a count.
+// Fields are consumed by the view agent (not yet wired at this point).
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
-pub struct HistoryRun {
-    pub started_at: i64,
-    pub entries: Vec<HistoryEntry>,
-    pub total_bytes: i64,
+pub struct DeleteError {
+    pub path: String,
+    pub reason: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -91,8 +96,24 @@ enum ScanMessage {
 
 enum DeleteMessage {
     ItemDeleted(PathBuf),
-    ItemFailed(String),
-    Complete { processed: usize },
+    ItemFailed { path: String, reason: String },
+    Complete { processed: usize, cancelled: bool },
+}
+
+enum BrowseMessage {
+    Entries {
+        path: PathBuf,
+        entries: Vec<BrowseEntry>,
+    },
+    Error(String),
+}
+
+// Constructed on background threads and drained by `check_history_progress`,
+// which the view agent will wire into its poll loop.
+#[allow(dead_code)]
+enum HistoryMessage {
+    Loaded(Vec<HistoryRun>),
+    Error(String),
 }
 
 #[derive(Debug, Serialize)]
@@ -151,7 +172,8 @@ pub struct ArtifactApp {
     // Async deletion
     is_deleting: bool,
     delete_receiver: Option<Arc<Mutex<Receiver<DeleteMessage>>>>,
-    delete_errors: Vec<String>,
+    delete_errors: Vec<DeleteError>,
+    delete_cancel: Option<Arc<AtomicBool>>,
 
     // File browser
     show_file_browser: bool,
@@ -159,6 +181,14 @@ pub struct ArtifactApp {
     browse_entries: Vec<BrowseEntry>,
     browse_back_stack: Vec<PathBuf>,
     browse_forward_stack: Vec<PathBuf>,
+    browse_receiver: Option<Arc<Mutex<Receiver<BrowseMessage>>>>,
+    browse_loading: bool,
+
+    // Async history load (drained by view-agent-wired check_history_progress)
+    #[allow(dead_code)]
+    history_receiver: Option<Arc<Mutex<Receiver<HistoryMessage>>>>,
+    #[allow(dead_code)]
+    history_loading: bool,
 
     // Live scan log (capped at 60 entries for the log panel)
     scan_log: VecDeque<String>,
@@ -239,6 +269,13 @@ impl ArtifactApp {
             .map(|p| p.directories_scanned)
     }
 
+    /// Synchronous history load. Kept as a shim for the view until it migrates
+    /// to the async [`start_history_load`](Self::start_history_load) /
+    /// [`check_history_progress`](Self::check_history_progress) pair (review
+    /// finding H4). Runs a DB query on the calling thread.
+    // Retained compatibility shim: the view migrated to the async
+    // start/check_history_progress pair, so this is no longer called.
+    #[allow(dead_code)]
     pub fn load_history(&self, limit: usize) -> Result<Vec<HistoryRun>, String> {
         let Some(db) = self.database.as_ref() else {
             return Ok(Vec::new());
@@ -249,7 +286,35 @@ impl ArtifactApp {
             Err(e) => return Err(e.to_string()),
         };
 
-        Ok(group_into_runs(records))
+        Ok(runs_from_records(records))
+    }
+
+    /// Detailed per-item delete failures from the most recent delete operation
+    /// (review finding M7). Cleared when a new delete starts.
+    // Not yet wired by the view; see "API CHANGES FOR VIEW AGENT".
+    #[allow(dead_code)]
+    pub fn delete_errors(&self) -> &[DeleteError] {
+        &self.delete_errors
+    }
+
+    /// Whether a background delete can currently be cancelled by the user
+    /// (review finding M8).
+    #[allow(dead_code)]
+    pub fn can_cancel_delete(&self) -> bool {
+        self.is_deleting && self.delete_cancel.is_some()
+    }
+
+    /// Whether the file browser is currently loading directory entries on a
+    /// background thread (review finding H4).
+    #[allow(dead_code)]
+    pub fn is_browse_loading(&self) -> bool {
+        self.browse_loading
+    }
+
+    /// Whether an async history load is in flight (review finding H4).
+    #[allow(dead_code)]
+    pub fn is_history_loading(&self) -> bool {
+        self.history_loading
     }
 }
 
@@ -340,11 +405,16 @@ impl ArtifactApp {
             is_deleting: false,
             delete_receiver: None,
             delete_errors: Vec::new(),
+            delete_cancel: None,
             show_file_browser: false,
             browse_path: home_path,
             browse_entries: Vec::new(),
             browse_back_stack: Vec::new(),
             browse_forward_stack: Vec::new(),
+            browse_receiver: None,
+            browse_loading: false,
+            history_receiver: None,
+            history_loading: false,
             scan_log: VecDeque::new(),
         })
     }
@@ -404,6 +474,14 @@ impl ArtifactApp {
 
     pub fn start_scan(&mut self, cx: &mut Context<Self>) {
         info!("Starting scan at path: {}", self.scan_path);
+
+        // Signal-cancel any prior in-flight scan so its thread stops walking the
+        // filesystem instead of being orphaned (review finding M8). Dropping the
+        // old receiver also means its stale `Complete` message is ignored.
+        if let Some(cancel) = self.scan_cancel.take() {
+            cancel.store(true, Ordering::Relaxed);
+        }
+        self.scan_receiver = None;
 
         self.scan_state = ScanState::Scanning;
         self.directories.clear();
@@ -596,31 +674,48 @@ impl ArtifactApp {
         let database = self.database.clone();
         let (tx, rx) = channel::<DeleteMessage>();
 
+        // User-invokable cancellation for the in-flight delete (review finding
+        // M8). Checked at the top of each iteration; already-deleted items are
+        // never un-deleted, but the remaining queue stops.
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.delete_cancel = Some(Arc::clone(&cancel));
+
         self.is_deleting = true;
         self.delete_errors.clear();
         self.delete_receiver = Some(Arc::new(Mutex::new(rx)));
 
         thread::spawn(move || {
             let mut processed = 0;
+            let mut cancelled = false;
             for item in to_delete {
-                debug!("Deleting directory: {}", item.path.display());
-                if let Err(e) = validate_delete_candidate(&scan_root, &item) {
-                    error!(
-                        "Pre-delete validation failed for {}: {}",
-                        item.path.display(),
-                        e
-                    );
-                    let _ = tx.send(DeleteMessage::ItemFailed(format!(
-                        "{}: {}",
-                        item.path.display(),
-                        e
-                    )));
-                    continue;
+                if cancel.load(Ordering::Relaxed) {
+                    cancelled = true;
+                    info!("Delete cancelled by user before completing all items");
+                    break;
                 }
-                match utils::remove_directory(&item.path, delete_mode) {
+                debug!("Deleting directory: {}", item.path.display());
+                // Validate and obtain the exact canonical path proven to be
+                // inside scan_root; that canonical path — not the raw
+                // `item.path` — is what gets removed (review finding C1).
+                let canonical = match validate_delete_candidate(&scan_root, &item) {
+                    Ok(canonical) => canonical,
+                    Err(e) => {
+                        error!(
+                            "Pre-delete validation failed for {}: {}",
+                            item.path.display(),
+                            e
+                        );
+                        let _ = tx.send(DeleteMessage::ItemFailed {
+                            path: item.path.display().to_string(),
+                            reason: e.to_string(),
+                        });
+                        continue;
+                    }
+                };
+                match utils::remove_directory_checked(&canonical, delete_mode) {
                     Ok(_) => {
                         processed += 1;
-                        info!("Deleted: {}", item.path.display());
+                        info!("Deleted: {}", canonical.display());
                         if let Some(db) = &database {
                             let record = DeletionRecord::new(
                                 item.path.clone(),
@@ -637,18 +732,31 @@ impl ArtifactApp {
                     }
                     Err(e) => {
                         error!("Failed to delete {}: {}", item.path.display(), e);
-                        let _ = tx.send(DeleteMessage::ItemFailed(format!(
-                            "{}: {}",
-                            item.path.display(),
-                            e
-                        )));
+                        let _ = tx.send(DeleteMessage::ItemFailed {
+                            path: item.path.display().to_string(),
+                            reason: e.to_string(),
+                        });
                     }
                 }
             }
-            let _ = tx.send(DeleteMessage::Complete { processed });
+            let _ = tx.send(DeleteMessage::Complete {
+                processed,
+                cancelled,
+            });
         });
 
         cx.notify();
+    }
+
+    /// Request cancellation of an in-progress background delete (review finding
+    /// M8). Items already removed stay removed; the remaining queue stops. Safe
+    /// to call when no delete is running.
+    #[allow(dead_code)]
+    pub fn cancel_delete(&mut self, cx: &mut Context<Self>) {
+        if let Some(cancel) = self.delete_cancel.as_ref() {
+            cancel.store(true, Ordering::Relaxed);
+            cx.notify();
+        }
     }
 
     pub fn check_delete_progress(&mut self, cx: &mut Context<Self>) {
@@ -672,13 +780,17 @@ impl ArtifactApp {
                     self.deleted_count += 1;
                     changed = true;
                 }
-                DeleteMessage::ItemFailed(err) => {
-                    self.delete_errors.push(err);
+                DeleteMessage::ItemFailed { path, reason } => {
+                    self.delete_errors.push(DeleteError { path, reason });
                     changed = true;
                 }
-                DeleteMessage::Complete { processed } => {
+                DeleteMessage::Complete {
+                    processed,
+                    cancelled,
+                } => {
                     self.is_deleting = false;
                     self.delete_receiver = None;
+                    self.delete_cancel = None;
                     self.total_size = self.directories.iter().map(|d| d.size_bytes).sum();
                     self.selected_size = 0;
                     let delete_mode = self.config.scan.delete_mode;
@@ -688,22 +800,35 @@ impl ArtifactApp {
                             DeleteMode::Trash => "Moved selected artifacts to Trash.",
                             DeleteMode::Permanent => "Permanently deleted selected artifacts.",
                         };
+                        let (title, extra) = if cancelled {
+                            ("CLEANUP CANCELLED", " Cancelled before finishing.")
+                        } else {
+                            ("CLEANUP COMPLETE", "")
+                        };
                         self.set_notice(
                             NoticeKind::Success,
-                            "CLEANUP COMPLETE",
+                            title,
                             format!(
-                                "{} {} items processed.",
+                                "{} {} items processed.{}",
                                 action_label,
-                                format_number(processed)
+                                format_number(processed),
+                                extra
                             ),
                         );
                     } else {
                         let n = self.delete_errors.len();
                         self.error_message = Some(format!("Failed to delete {} directories", n));
+                        // Reference that per-item detail is available via
+                        // `delete_errors()` for the view to render (M7).
+                        let cancel_note = if cancelled { " Cancelled." } else { "" };
                         self.set_notice(
                             NoticeKind::Error,
                             "CLEANUP INCOMPLETE",
-                            format!("Failed to delete {} directories", n),
+                            format!(
+                                "Failed to delete {} directories; see details below for the \
+                                 affected paths and reasons.{}",
+                                n, cancel_note
+                            ),
                         );
                     }
                     changed = true;
@@ -734,11 +859,41 @@ impl ArtifactApp {
         cx.notify();
     }
 
-    pub fn toggle_selection(&mut self, index: usize, cx: &mut Context<Self>) {
-        if let Some(dir) = self.directories.get_mut(index) {
+    /// Toggle the selection state of the item at the given canonical `path`
+    /// (review finding M4). Selection is keyed by path, which is stable across
+    /// the `retain(...)` that `check_delete_progress` runs mid-delete — unlike a
+    /// vector index, which shifts when earlier items are removed.
+    pub fn toggle_selection_by_path(&mut self, path: &Path, cx: &mut Context<Self>) {
+        if let Some(dir) = self.directories.iter_mut().find(|d| d.path == path) {
             dir.selected = !dir.selected;
             self.update_selected_size();
             cx.notify();
+        }
+    }
+
+    /// Set the selection state of the item at `path` explicitly (review finding
+    /// M4). No-op if no item matches.
+    #[allow(dead_code)]
+    pub fn set_selected(&mut self, path: &Path, selected: bool, cx: &mut Context<Self>) {
+        if let Some(dir) = self.directories.iter_mut().find(|d| d.path == path)
+            && dir.selected != selected
+        {
+            dir.selected = selected;
+            self.update_selected_size();
+            cx.notify();
+        }
+    }
+
+    /// Index-based selection toggle. **Shim** kept so `view.rs` keeps compiling
+    /// until it migrates to [`toggle_selection_by_path`](Self::toggle_selection_by_path).
+    /// Resolves the index to its path first so the toggle is applied to the
+    /// stable path, not the raw index.
+    // Retained compatibility shim: the view migrated to
+    // `toggle_selection_by_path`, so this index-based entry point is unused.
+    #[allow(dead_code)]
+    pub fn toggle_selection(&mut self, index: usize, cx: &mut Context<Self>) {
+        if let Some(path) = self.directories.get(index).map(|d| d.path.clone()) {
+            self.toggle_selection_by_path(&path, cx);
         }
     }
 
@@ -838,22 +993,153 @@ impl ArtifactApp {
         cx.notify();
     }
 
+    /// Kick off a background directory listing for the current `browse_path`
+    /// (review finding H4). The blocking `read_dir` runs off the UI thread; the
+    /// result is delivered via [`check_browse_progress`](Self::check_browse_progress).
+    ///
+    /// Entries are cleared immediately and `browse_loading` is set so the view
+    /// can show a spinner while the listing is in flight. Only the most recent
+    /// request's results are applied (results are keyed by path).
     fn refresh_browse_entries(&mut self) {
         self.browse_entries.clear();
+        self.browse_loading = true;
 
-        // Parent entry
-        if let Some(parent) = self.browse_path.parent() {
-            self.browse_entries.push(BrowseEntry {
-                name: "..".to_string(),
-                path: parent.to_path_buf(),
-            });
-        }
+        let path = self.browse_path.clone();
+        let (tx, rx) = channel::<BrowseMessage>();
+        self.browse_receiver = Some(Arc::new(Mutex::new(rx)));
 
-        // Child directories
-        if let Ok(dirs) = utils::list_directories(&self.browse_path) {
-            for (name, path) in dirs {
-                self.browse_entries.push(BrowseEntry { name, path });
+        thread::spawn(move || {
+            let mut entries = Vec::new();
+
+            // Parent entry.
+            if let Some(parent) = path.parent() {
+                entries.push(BrowseEntry {
+                    name: "..".to_string(),
+                    path: parent.to_path_buf(),
+                });
             }
+
+            match utils::list_directories(&path) {
+                Ok(dirs) => {
+                    for (name, child) in dirs {
+                        entries.push(BrowseEntry { name, path: child });
+                    }
+                    let _ = tx.send(BrowseMessage::Entries { path, entries });
+                }
+                Err(e) => {
+                    let _ = tx.send(BrowseMessage::Error(format!(
+                        "cannot read {}: {}",
+                        path.display(),
+                        e
+                    )));
+                }
+            }
+        });
+    }
+
+    /// Drain any pending background directory-listing results and apply them
+    /// (review finding H4). Mirror of `check_scan_progress`; the view should
+    /// call this from its poll/observe loop.
+    #[allow(dead_code)]
+    pub fn check_browse_progress(&mut self, cx: &mut Context<Self>) {
+        let rx = match self.browse_receiver.clone() {
+            Some(rx) => rx,
+            None => return,
+        };
+
+        let rx = rx.lock();
+        let mut messages = Vec::new();
+        while let Ok(msg) = rx.try_recv() {
+            messages.push(msg);
+        }
+        drop(rx);
+
+        for msg in messages {
+            match msg {
+                BrowseMessage::Entries { path, entries } => {
+                    // Ignore stale results from a superseded navigation.
+                    if path == self.browse_path {
+                        self.browse_entries = entries;
+                        self.browse_loading = false;
+                        self.browse_receiver = None;
+                        cx.notify();
+                    }
+                }
+                BrowseMessage::Error(err) => {
+                    warn!("browse listing failed: {}", err);
+                    self.browse_loading = false;
+                    self.browse_receiver = None;
+                    cx.notify();
+                }
+            }
+        }
+    }
+
+    // -- Async history load -------------------------------------------------
+
+    /// Start loading recent deletion history on a background thread (review
+    /// finding H4). Results arrive via
+    /// [`check_history_progress`](Self::check_history_progress). Prefer this over
+    /// the synchronous [`load_history`](Self::load_history), which runs the DB
+    /// query on the calling thread.
+    #[allow(dead_code)]
+    pub fn start_history_load(&mut self, limit: usize, cx: &mut Context<Self>) {
+        let Some(db) = self.database.clone() else {
+            // No DB: deliver an empty result synchronously-ish via channel.
+            let (tx, rx) = channel::<HistoryMessage>();
+            let _ = tx.send(HistoryMessage::Loaded(Vec::new()));
+            self.history_receiver = Some(Arc::new(Mutex::new(rx)));
+            self.history_loading = true;
+            cx.notify();
+            return;
+        };
+
+        let (tx, rx) = channel::<HistoryMessage>();
+        self.history_receiver = Some(Arc::new(Mutex::new(rx)));
+        self.history_loading = true;
+
+        thread::spawn(move || match db.get_recent_deletions(limit.max(1)) {
+            Ok(records) => {
+                let _ = tx.send(HistoryMessage::Loaded(runs_from_records(records)));
+            }
+            Err(e) => {
+                let _ = tx.send(HistoryMessage::Error(e.to_string()));
+            }
+        });
+
+        cx.notify();
+    }
+
+    /// Drain a completed async history load, if any. Returns:
+    /// - `Some(Ok(runs))` when a load just completed successfully,
+    /// - `Some(Err(msg))` when it failed,
+    /// - `None` when nothing is ready yet.
+    ///
+    /// (review finding H4)
+    #[allow(dead_code)]
+    pub fn check_history_progress(
+        &mut self,
+        cx: &mut Context<Self>,
+    ) -> Option<Result<Vec<HistoryRun>, String>> {
+        let rx = self.history_receiver.clone()?;
+        let rx = rx.lock();
+        let msg = rx.try_recv().ok();
+        drop(rx);
+
+        match msg {
+            Some(HistoryMessage::Loaded(runs)) => {
+                self.history_loading = false;
+                self.history_receiver = None;
+                cx.notify();
+                Some(Ok(runs))
+            }
+            Some(HistoryMessage::Error(e)) => {
+                self.history_loading = false;
+                self.history_receiver = None;
+                cx.notify();
+                Some(Err(e))
+            }
+            None => None,
         }
     }
 
@@ -924,10 +1210,42 @@ fn write_deletion_manifest(config: &AppConfig, manifest: &DeletionManifest) -> a
     std::fs::create_dir_all(&dir)?;
     let content = toml::to_string_pretty(manifest)?;
     std::fs::write(dir.join(format!("{}.toml", manifest.operation_id)), content)?;
+
+    // Prune old manifests so the directory can't grow unbounded (review finding
+    // M6). Best-effort: a prune failure must not fail the delete.
+    if let Err(e) = prune_deletion_manifests(&dir, history::MANIFEST_RETENTION) {
+        warn!("failed to prune old deletion manifests: {}", e);
+    }
     Ok(())
 }
 
-fn validate_delete_candidate(scan_root: &Path, item: &DirectoryItem) -> anyhow::Result<()> {
+/// Delete all but the most recent `keep` deletion manifests in `dir`. The
+/// decision of which files to prune is the pure, tested
+/// [`history::manifests_to_prune`]; this wrapper only performs the filesystem
+/// reads/removals.
+fn prune_deletion_manifests(dir: &Path, keep: usize) -> anyhow::Result<()> {
+    let mut names = Vec::new();
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        if let Some(name) = entry.file_name().to_str() {
+            names.push(name.to_string());
+        }
+    }
+
+    for name in history::manifests_to_prune(names, keep) {
+        let path = dir.join(&name);
+        if let Err(e) = std::fs::remove_file(&path) {
+            warn!("failed to remove old manifest {}: {}", path.display(), e);
+        }
+    }
+    Ok(())
+}
+
+/// Validate a delete candidate and return the exact **canonical** path proven to
+/// be inside `scan_root` (review finding C1). Callers must delete this returned
+/// canonical path — not `item.path` — so the containment guarantee applies to
+/// the path actually removed.
+fn validate_delete_candidate(scan_root: &Path, item: &DirectoryItem) -> anyhow::Result<PathBuf> {
     let canonical_root = scan_root
         .canonicalize()
         .map_err(|e| anyhow::anyhow!("scan root is no longer accessible: {e}"))?;
@@ -938,8 +1256,9 @@ fn validate_delete_candidate(scan_root: &Path, item: &DirectoryItem) -> anyhow::
     if !canonical_path.starts_with(&canonical_root) {
         anyhow::bail!("path is outside the scanned root: {}", item.path.display());
     }
-    validate_artifact_path(&item.path, item.dir_type.name(), item.is_orphaned)
-        .map_err(|e| anyhow::anyhow!(e.to_string()))
+    validate_artifact_path(&canonical_path, item.dir_type.name(), item.is_orphaned)
+        .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+    Ok(canonical_path)
 }
 
 fn enabled_rules_from_config(config: &AppConfig) -> HashSet<String> {
@@ -977,51 +1296,21 @@ fn enabled_language_labels(enabled_rules: &HashSet<String>) -> Vec<String> {
     languages
 }
 
+// Thin wrapper over the canonical implementation in the testable lib core
+// (review findings H3/L3). Kept as a private helper only to avoid churning the
+// many in-file call sites; the canonical public path is
+// `artifact::utils::format_number`.
 fn format_number(n: usize) -> String {
-    if n < 1_000 {
-        return n.to_string();
-    }
-
-    let s = n.to_string();
-    let mut result = String::new();
-    for (i, c) in s.chars().rev().enumerate() {
-        if i > 0 && i % 3 == 0 {
-            result.push(',');
-        }
-        result.push(c);
-    }
-    result.chars().rev().collect()
+    utils::format_number(n)
 }
 
-// Group records that fall within the same run window. We treat any pair of
-// deletions within RUN_WINDOW_SECS of each other as part of the same run.
-// Records are expected to be in descending order by deleted_at from the DB.
-fn group_into_runs(records: Vec<artifact::database::DeletionRecord>) -> Vec<HistoryRun> {
-    const RUN_WINDOW_SECS: i64 = 60;
-    let mut runs: Vec<HistoryRun> = Vec::new();
-    for rec in records {
-        let entry = HistoryEntry {
-            path: rec.path,
-            size_bytes: rec.size_bytes,
-            deleted_at: rec.deleted_at,
-        };
-
-        match runs.last_mut() {
-            Some(run) if (run.started_at - entry.deleted_at).abs() <= RUN_WINDOW_SECS => {
-                if entry.deleted_at < run.started_at {
-                    run.started_at = entry.deleted_at;
-                }
-                run.total_bytes += entry.size_bytes;
-                run.entries.push(entry);
-            }
-            _ => {
-                runs.push(HistoryRun {
-                    started_at: entry.deleted_at,
-                    total_bytes: entry.size_bytes,
-                    entries: vec![entry],
-                });
-            }
-        }
-    }
-    runs
+// Map DB records into the pure history-core representation and group them into
+// runs (review finding H3). The grouping logic lives in `artifact::history`
+// where it is unit-tested; here we only adapt `DeletionRecord` fields.
+fn runs_from_records(records: Vec<artifact::database::DeletionRecord>) -> Vec<HistoryRun> {
+    history::group_into_runs(records.into_iter().map(|rec| CoreHistoryEntry {
+        path: rec.path,
+        size_bytes: rec.size_bytes,
+        deleted_at: rec.deleted_at,
+    }))
 }

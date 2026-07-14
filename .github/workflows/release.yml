@@ -20,26 +20,84 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.96
 
       - name: Test native build
-        run: cargo test
+        run: cargo test --all-targets --locked
+
+  windows-sign:
+    name: Build & Authenticode-sign Windows
+    needs: native-smoke
+    runs-on: windows-latest
+    env:
+      WINDOWS_CERTIFICATE_PFX_BASE64: ${{ secrets.WINDOWS_CERTIFICATE_PFX_BASE64 }}
+      WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.96
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Build Windows executable
+        run: cargo build --release --locked --target x86_64-pc-windows-msvc
+
+      - name: Stage executable
+        shell: bash
+        run: |
+          mkdir -p target/dist
+          cp target/x86_64-pc-windows-msvc/release/artifact.exe target/dist/artifact-windows-x86_64.exe
+
+      # Fail closed: a v*.*.* tag build MUST be signed. If the signing secret is
+      # absent on a tag build, this step fails the job instead of shipping an
+      # unsigned executable.
+      - name: Require Windows signing secret on tag builds
+        if: env.WINDOWS_CERTIFICATE_PFX_BASE64 == '' || env.WINDOWS_CERTIFICATE_PASSWORD == ''
+        shell: bash
+        run: |
+          echo "::error::Windows code-signing secrets are missing; refusing to ship an unsigned executable for a tagged release (fail closed)."
+          exit 1
+
+      - name: Authenticode sign
+        env:
+          EXE_PATH: target/dist/artifact-windows-x86_64.exe
+        shell: pwsh
+        run: pwsh -File scripts/windows-sign.ps1
+
+      - name: Package signed executable
+        shell: bash
+        run: |
+          cd target/dist
+          7z a artifact-windows-x86_64.zip artifact-windows-x86_64.exe
+
+      - name: Upload signed Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-signed
+          path: target/dist/artifact-windows-x86_64.zip
+          if-no-files-found: error
 
   release:
     name: Build & Release
-    needs: native-smoke
+    needs: [native-smoke, windows-sign]
     runs-on: macos-latest
     permissions:
       contents: write
       id-token: write
       attestations: write
     env:
+      APPLE_CERTIFICATE_P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
+      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
       APPLE_CODESIGN_IDENTITY: ${{ secrets.APPLE_CODESIGN_IDENTITY }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.96
 
       - name: Cache cargo registry
         uses: actions/cache@v4
@@ -66,10 +124,42 @@ jobs:
       - name: Package artifacts
         run: just package
 
-      - name: Optional macOS codesign
-        if: env.APPLE_CODESIGN_IDENTITY != ''
+      # Fail closed: a v*.*.* tag build MUST be signed and notarized on macOS.
+      # If any required Apple secret is missing on a tag build, this step fails
+      # the job instead of shipping an unsigned/unnotarized bundle.
+      - name: Require macOS signing secrets on tag builds
+        if: >-
+          env.APPLE_CERTIFICATE_P12_BASE64 == '' ||
+          env.APPLE_CERTIFICATE_PASSWORD == '' ||
+          env.APPLE_CODESIGN_IDENTITY == '' ||
+          env.APPLE_ID == '' ||
+          env.APPLE_TEAM_ID == '' ||
+          env.APPLE_APP_PASSWORD == ''
         run: |
-          codesign --force --timestamp --options runtime --sign "$APPLE_CODESIGN_IDENTITY" target/dist/artifact-macos-universal
+          echo "::error::One or more Apple signing/notarization secrets are missing; refusing to ship an unsigned or un-notarized macOS build for a tagged release (fail closed)."
+          exit 1
+
+      - name: Bundle, sign, notarize & staple macOS .app → .dmg
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          bash scripts/macos-bundle.sh "$VERSION"
+
+      # Drop the unsigned archives produced by `just package`: macOS ships as a
+      # signed+notarized .dmg, and Windows ships as the signed .zip from the
+      # windows-sign job. Keep the Linux tarballs. Runs BEFORE the signed
+      # Windows download so it cannot delete the signed artifact.
+      - name: Prune unsigned macOS/Windows archives
+        run: |
+          rm -f target/dist/artifact-macos-universal.tar.gz
+          rm -f target/dist/artifact-macos-universal
+          rm -f target/dist/artifact-windows-x86_64.zip
+          rm -f target/dist/artifact-windows-x86_64.exe
+
+      - name: Download signed Windows artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-signed
+          path: target/dist
 
       - name: Generate SBOM
         run: just sbom

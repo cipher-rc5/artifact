@@ -79,12 +79,66 @@ impl DirectoryItem {
         }
     }
 
+    #[cfg(test)]
+    fn with_modified(last_modified: Option<SystemTime>) -> Self {
+        let rule = rules::RULES
+            .first()
+            .expect("at least one built-in rule must exist");
+        Self::new(
+            PathBuf::from("/tmp/x"),
+            DirectoryType::new(rule),
+            0,
+            last_modified,
+            None,
+            None,
+            false,
+        )
+    }
+
+    /// Whole days between `last_modified` and now.
+    ///
+    /// A future mtime (clock skew, a restored backup, a file touched with a
+    /// future timestamp) is reported as `0` days rather than a negative or
+    /// wildly large value. The result saturates into `i64` instead of using a
+    /// lossy `as` cast, so an absurd timestamp yields `i64::MAX` rather than a
+    /// truncated/wrapped number (L1).
     pub fn days_since_modified(&self) -> Option<i64> {
-        self.last_modified.map(|modified| {
-            let elapsed = SystemTime::now()
-                .duration_since(modified)
-                .unwrap_or_default();
-            (elapsed.as_secs() / 86400) as i64
-        })
+        self.last_modified.map(
+            |modified| match SystemTime::now().duration_since(modified) {
+                // Normal case: mtime is in the past.
+                Ok(elapsed) => i64::try_from(elapsed.as_secs() / 86_400).unwrap_or(i64::MAX),
+                // mtime is in the future — clamp to 0 rather than going negative.
+                Err(_) => 0,
+            },
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn days_since_modified_none_when_missing() {
+        assert_eq!(
+            DirectoryItem::with_modified(None).days_since_modified(),
+            None
+        );
+    }
+
+    #[test]
+    fn days_since_modified_past() {
+        let three_days = SystemTime::now() - Duration::from_secs(3 * 86_400 + 100);
+        let item = DirectoryItem::with_modified(Some(three_days));
+        assert_eq!(item.days_since_modified(), Some(3));
+    }
+
+    #[test]
+    fn days_since_modified_future_is_zero() {
+        // A file dated a year in the future must report 0, never negative.
+        let future = SystemTime::now() + Duration::from_secs(365 * 86_400);
+        let item = DirectoryItem::with_modified(Some(future));
+        assert_eq!(item.days_since_modified(), Some(0));
     }
 }

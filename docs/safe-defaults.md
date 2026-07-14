@@ -25,4 +25,11 @@ Only rules that explicitly opt in can be shown as orphaned when markers are miss
 
 ## Permanent Delete
 
-Permanent deletion should be used only when Trash is insufficient. It requires explicit user selection and stronger confirmation text. Production releases should be signed and distributed with checksums so users can trust the binary performing deletion.
+Permanent deletion should be used only when Trash is insufficient. It requires explicit user selection and stronger confirmation text.
+
+Production releases are distributed with checksums (`SHA256SUMS`) and code signing so users can trust the binary performing deletion:
+
+- macOS builds are signed with a hardened runtime, notarized by Apple, and stapled (shipped as a `.dmg`).
+- Windows builds are Authenticode-signed.
+
+The release workflow fails closed: a tagged release cannot ship an unsigned or un-notarized artifact. See [`release.md`](./release.md) for the signing pipeline and required secrets.

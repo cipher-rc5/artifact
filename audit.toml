@@ -1,9 +1,16 @@
 # Security audit suppression configuration.
-# cargo-audit 0.22.x reads this file only via --config; the just `audit` recipe passes --ignore directly.
-# This file serves as a documented record of accepted advisories.
 #
-# Accepted advisory risk is documented here so CI, local audit, and release
-# policy share one source of truth. Review before every production release.
+# This is the SINGLE source of truth for accepted advisories that `cargo audit`
+# consumes: the `just audit` recipe and CI both run `cargo audit --config
+# audit.toml`, so there are no inline `--ignore` flags to keep in sync.
+#
+# The machine-readable copy at `scripts/advisories.json` carries the review
+# dates; `scripts/check-advisories.py` enforces that (a) no review date has
+# lapsed and (b) this file and `deny.toml` list exactly the same advisory IDs.
+# When you add or remove an advisory here, update `scripts/advisories.json` and
+# `deny.toml` to match, or the advisory policy check fails.
+#
+# Review by: 2026-08-01 (see scripts/advisories.json).
 [advisories]
 ignore = [
   # rustls-pemfile unmaintained — transitive via gpui → gpui_http_client → zed-reqwest.
