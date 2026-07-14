@@ -203,24 +203,21 @@ mod tests {
         assert!(format_elapsed(90.0).contains('m'));
     }
 
+    #[cfg(unix)]
     #[test]
     fn remove_directory_rejects_symlink() {
         let tmp = tempfile::tempdir().unwrap();
         let real_dir = tmp.path().join("real");
         fs::create_dir(&real_dir).unwrap();
         let link = tmp.path().join("link");
-        #[cfg(unix)]
         std::os::unix::fs::symlink(&real_dir, &link).unwrap();
-        #[cfg(unix)]
-        {
-            let result = remove_directory(&link, crate::config::DeleteMode::Permanent);
-            assert!(result.is_err(), "should refuse to delete through a symlink");
-            let msg = result.unwrap_err().to_string();
-            assert!(
-                msg.contains("symlink"),
-                "error should mention symlink, got: {msg}"
-            );
-        }
+        let result = remove_directory(&link, crate::config::DeleteMode::Permanent);
+        assert!(result.is_err(), "should refuse to delete through a symlink");
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("symlink"),
+            "error should mention symlink, got: {msg}"
+        );
     }
 
     #[test]
@@ -242,25 +239,23 @@ mod tests {
         assert!(!target.exists(), "directory should be gone");
     }
 
+    #[cfg(unix)]
     #[test]
     fn remove_directory_checked_rejects_symlink_final_component() {
         let tmp = tempfile::tempdir().unwrap();
         let real_dir = tmp.path().join("real");
         fs::create_dir(&real_dir).unwrap();
         let link = tmp.path().join("link");
-        #[cfg(unix)]
-        {
-            std::os::unix::fs::symlink(&real_dir, &link).unwrap();
-            // Pass the non-canonical symlink path directly to the checked
-            // variant: it must refuse on the final-component symlink check.
-            let result = remove_directory_checked(&link, crate::config::DeleteMode::Permanent);
-            assert!(result.is_err(), "should refuse a symlink final component");
-            assert!(
-                result.unwrap_err().to_string().contains("symlink"),
-                "error should mention symlink"
-            );
-            assert!(real_dir.exists(), "the real target must be untouched");
-        }
+        std::os::unix::fs::symlink(&real_dir, &link).unwrap();
+        // Pass the non-canonical symlink path directly to the checked
+        // variant: it must refuse on the final-component symlink check.
+        let result = remove_directory_checked(&link, crate::config::DeleteMode::Permanent);
+        assert!(result.is_err(), "should refuse a symlink final component");
+        assert!(
+            result.unwrap_err().to_string().contains("symlink"),
+            "error should mention symlink"
+        );
+        assert!(real_dir.exists(), "the real target must be untouched");
     }
 
     #[test]

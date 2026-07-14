@@ -19,6 +19,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # gpui needs X11/xkbcommon/Wayland dev libs to link executables on Linux.
+      - name: Install Linux GUI dependencies (gpui)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev \
+            libwayland-dev libssl-dev
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@1.96
 

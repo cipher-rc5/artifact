@@ -106,19 +106,16 @@ fn validation_refuses_artifact_after_marker_removed() {
     assert!(validate_artifact_path(&node_modules, "node_modules", false).is_err());
 }
 
+#[cfg(unix)]
 #[test]
 fn deletion_refuses_symlinked_target() {
     let tmp = tempfile::tempdir().unwrap();
     let real = tmp.path().join("real_node_modules");
     fs::create_dir_all(&real).unwrap();
     let link = tmp.path().join("link");
-    #[cfg(unix)]
-    {
-        std::os::unix::fs::symlink(&real, &link).unwrap();
-        // remove_directory must refuse a symlinked path outright.
-        assert!(utils::remove_directory(&link, DeleteMode::Permanent).is_err());
-        // The real directory is untouched.
-        assert!(real.exists());
-    }
-    let _ = &link;
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+    // remove_directory must refuse a symlinked path outright.
+    assert!(utils::remove_directory(&link, DeleteMode::Permanent).is_err());
+    // The real directory is untouched.
+    assert!(real.exists());
 }
