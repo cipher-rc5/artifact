@@ -38,7 +38,7 @@ clippy:
 
 # Audit deps; accepted advisories are single-sourced in audit.toml (see scripts/advisories.json).
 audit:
-    cargo audit --config audit.toml
+    cargo audit $(python3 -c "import json; print(' '.join('--ignore ' + a['id'] for a in json.load(open('scripts/advisories.json'))['advisories']))")
 
 deny:
     cargo deny check

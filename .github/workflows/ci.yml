@@ -75,8 +75,10 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: |
           cargo install cargo-audit --locked --quiet
-          # Accepted advisories are single-sourced in audit.toml (no inline --ignore).
-          cargo audit --config audit.toml
+          # Accepted advisories are single-sourced in scripts/advisories.json;
+          # cargo-audit has no --config flag, so build --ignore args from it.
+          IGNORES=$(python3 -c "import json; print(' '.join('--ignore ' + a['id'] for a in json.load(open('scripts/advisories.json'))['advisories']))")
+          cargo audit $IGNORES
 
       - name: cargo deny
         if: matrix.os == 'ubuntu-latest'
