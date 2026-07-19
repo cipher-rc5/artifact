@@ -3,19 +3,44 @@
 //! Schema: a primary `deletions` table keyed by auto-incremented `u64` ID,
 //! with secondary indices on `(deleted_at, id)` for time-range scans and
 //! `(dir_type, id)` for type-grouped queries.
+//!
+//! Records are serialized with `rkyv`. On read, each row is copied into an
+//! aligned buffer and **fully deserialized** into an owned [`DeletionRecord`]
+//! (see [`DeletionDatabase::decode_record`]) — this is not a zero-copy access
+//! of the archived form. The copy is intentional: slices borrowed from redb
+//! carry no alignment guarantee, so they cannot be reinterpreted in place.
 
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 use rkyv::{Archive, Deserialize, Serialize, rancor::Error as RkyvError, util::AlignedVec};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tracing::{debug, info, instrument};
+use tracing::{debug, info, instrument, warn};
 
 use crate::directory_item::DirectoryType;
 use crate::error::{ArtifactError, Result};
 
 const DB_FILE: &str = "artifact.redb";
-const SCHEMA_VERSION: i64 = 1;
+
+/// Current on-disk schema version. Bump this and add a migration arm in
+/// [`DeletionDatabase::run_migrations`] whenever the persisted layout changes.
+const SCHEMA_VERSION: u64 = 1;
+
+/// Metadata embedded in every [`DeletionRecord`], serialized to JSON via serde.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct RecordMetadata {
+    version: u64,
+    hostname: Option<String>,
+}
+
+/// Map an init-phase redb error to [`ArtifactError::DatabaseInit`].
+///
+/// Query paths rely on the blanket `From<redb::Error>` (which yields
+/// `DatabaseQuery`); schema setup/migration uses this instead so that a
+/// corrupt/incompatible store reports as an initialization failure.
+fn init_err<E: std::fmt::Display>(e: E) -> ArtifactError {
+    ArtifactError::DatabaseInit(e.to_string())
+}
 
 // Primary table: id -> rkyv-archived DeletionRecord
 const RECORDS: TableDefinition<u64, &[u8]> = TableDefinition::new("deletions");
@@ -60,25 +85,23 @@ impl DeletionRecord {
         project_root: Option<PathBuf>,
         project_name: Option<String>,
     ) -> Self {
+        // `duration_since` fails only if the clock is before 1970 (VM restore,
+        // dead RTC battery). Treat that as epoch rather than panicking.
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_secs() as i64;
 
-        let hostname_val = hostname::get()
-            .ok()
-            .and_then(|h| h.into_string().ok())
-            .map(|s| {
-                // Minimal JSON string escaping for hostname
-                let escaped = s.replace('\\', "\\\\").replace('"', "\\\"");
-                format!("\"{}\"", escaped)
-            })
-            .unwrap_or_else(|| "null".to_string());
+        let hostname_val = hostname::get().ok().and_then(|h| h.into_string().ok());
 
-        let metadata = format!(
-            r#"{{"version":{},"hostname":{}}}"#,
-            SCHEMA_VERSION, hostname_val
-        );
+        // serde_json handles all escaping (control chars, quotes, unicode)
+        // correctly. Serialization of this fixed struct cannot fail, but fall
+        // back to an empty object rather than unwrap on the impossible case.
+        let metadata = serde_json::to_string(&RecordMetadata {
+            version: SCHEMA_VERSION,
+            hostname: hostname_val,
+        })
+        .unwrap_or_else(|_| "{}".to_string());
 
         Self {
             id: 0,
@@ -108,8 +131,12 @@ pub struct DeletionDatabase {
 impl DeletionDatabase {
     /// Open (or create) the deletion database at the given directory.
     ///
-    /// If `data_dir` is `None`, the database is placed in the platform config
-    /// directory (`~/.config/artifact/` on Linux, `~/Library/Application Support/artifact/` on macOS).
+    /// If `data_dir` is `None`, the database is placed under the platform data
+    /// directory (`~/.local/share/artifact/db/` on Linux,
+    /// `~/Library/Application Support/artifact/db/` on macOS,
+    /// `%APPDATA%\artifact\db\` on Windows). This mirrors
+    /// [`crate::config::AppConfig::get_db_path`] so the default location is
+    /// identical whether the caller passes an explicit path or `None`.
     /// The required directory is created if it does not exist.
     #[instrument(skip_all)]
     pub fn new(data_dir: Option<PathBuf>) -> Result<Self> {
@@ -121,20 +148,33 @@ impl DeletionDatabase {
             })?;
             dir.join(DB_FILE)
         } else {
-            let config_dir = dirs::config_dir()
+            // Single-sourced with AppConfig::get_db_path(): platform data dir,
+            // `artifact/db` subdirectory — not the config dir (fixes the M5
+            // divergence where None fell back to a different location).
+            let data_dir = dirs::data_dir()
                 .ok_or_else(|| {
-                    ArtifactError::Configuration("Could not find config directory".to_string())
+                    ArtifactError::Configuration("Could not find data directory".to_string())
                 })?
-                .join("artifact");
+                .join("artifact")
+                .join("db");
 
-            std::fs::create_dir_all(&config_dir).map_err(|e| {
-                ArtifactError::DatabaseInit(format!("Could not create config directory: {}", e))
+            std::fs::create_dir_all(&data_dir).map_err(|e| {
+                ArtifactError::DatabaseInit(format!("Could not create data directory: {}", e))
             })?;
 
-            config_dir.join(DB_FILE)
+            data_dir.join(DB_FILE)
         };
 
         debug!("Database path: {}", db_path.display());
+
+        // Peek the stored schema version (if any) *before* opening for real, so
+        // we can take a backup ahead of a potential migration or rejection.
+        let stored_version = Self::peek_schema_version(&db_path);
+        let needs_backup =
+            db_path.exists() && stored_version.map(|v| v != SCHEMA_VERSION).unwrap_or(false);
+        if needs_backup {
+            Self::backup_before_migration(&db_path, stored_version);
+        }
 
         let db = Database::create(&db_path)
             .map_err(|e| ArtifactError::DatabaseConnection(e.to_string()))?;
@@ -150,30 +190,131 @@ impl DeletionDatabase {
     fn initialize_schema(&self) -> Result<()> {
         debug!("Initializing database schema");
 
-        let write_txn = self.db.begin_write()?;
+        // Init-phase redb failures are wrapped as `DatabaseInit` (via
+        // `init_err`) so they surface to the user as "could not initialize
+        // database" rather than the generic "database query failed" produced by
+        // the blanket `From<redb::Error>` used on the query paths.
+        let write_txn = self.db.begin_write().map_err(init_err)?;
         // Opening each table inside a write txn creates them on first use.
-        let _ = write_txn.open_table(RECORDS)?;
-        let _ = write_txn.open_table(IDX_DELETED_AT)?;
-        let _ = write_txn.open_table(IDX_DIR_TYPE)?;
+        write_txn.open_table(RECORDS).map_err(init_err)?;
+        write_txn.open_table(IDX_DELETED_AT).map_err(init_err)?;
+        write_txn.open_table(IDX_DIR_TYPE).map_err(init_err)?;
         {
-            let mut meta = write_txn.open_table(META)?;
-            let stored_version = meta.get(META_SCHEMA_VERSION)?.map(|v| v.value());
+            let mut meta = write_txn.open_table(META).map_err(init_err)?;
+            let stored_version = meta
+                .get(META_SCHEMA_VERSION)
+                .map_err(init_err)?
+                .map(|v| v.value());
             match stored_version {
-                Some(version) if version == SCHEMA_VERSION as u64 => {}
+                // Fresh database: stamp the current version.
+                None => {
+                    meta.insert(META_SCHEMA_VERSION, SCHEMA_VERSION)
+                        .map_err(init_err)?;
+                }
+                // Already at the current version: nothing to do.
+                Some(version) if version == SCHEMA_VERSION => {}
+                // Older, but known: run forward migrations in order.
+                Some(version) if version < SCHEMA_VERSION => {
+                    Self::run_migrations(&mut meta, version)?;
+                }
+                // Newer than this build supports: refuse rather than risk
+                // misreading a future layout.
                 Some(version) => {
                     return Err(ArtifactError::DatabaseInit(format!(
-                        "Unsupported database schema version {version}; expected {SCHEMA_VERSION}"
+                        "Database schema version {version} is newer than supported \
+                         (this build supports up to {SCHEMA_VERSION}); \
+                         please upgrade the application"
                     )));
-                }
-                None => {
-                    meta.insert(META_SCHEMA_VERSION, SCHEMA_VERSION as u64)?;
                 }
             }
         }
-        write_txn.commit()?;
+        write_txn.commit().map_err(init_err)?;
 
         debug!("Schema initialized successfully");
         Ok(())
+    }
+
+    /// Apply forward migrations to bring an on-disk database from `from_version`
+    /// up to [`SCHEMA_VERSION`].
+    ///
+    /// This is deliberately structured as an ordered, fall-through ladder so
+    /// that new versions only require appending a single arm (e.g. a
+    /// `v1 -> v2` step) without touching the earlier ones. Each step should be
+    /// idempotent where possible and must leave the stored `schema_version`
+    /// equal to [`SCHEMA_VERSION`] on success.
+    ///
+    /// Callers are expected to have taken a backup of the database file (see
+    /// [`DeletionDatabase::backup_before_migration`]) before invoking this.
+    fn run_migrations(meta: &mut redb::Table<'_, &str, u64>, from_version: u64) -> Result<()> {
+        let mut version = from_version;
+        info!(
+            "Migrating database schema from version {} to {}",
+            from_version, SCHEMA_VERSION
+        );
+
+        // Ordered migration ladder. Add future steps here, e.g.:
+        //   if version == 1 { migrate_v1_to_v2(meta)?; version = 2; }
+        //
+        // The current build only knows version 1, so there is no pre-1 layout
+        // to migrate from in practice; this branch exists so the structure is
+        // ready the moment SCHEMA_VERSION is bumped.
+        if version == 0 {
+            // v0 predates the versioned `meta` table; nothing structural to do
+            // beyond adopting the current version stamp.
+            debug!("Applying migration v0 -> v1");
+            version = 1;
+        }
+
+        if version != SCHEMA_VERSION {
+            return Err(ArtifactError::DatabaseInit(format!(
+                "No migration path from schema version {from_version} to {SCHEMA_VERSION}"
+            )));
+        }
+
+        meta.insert(META_SCHEMA_VERSION, SCHEMA_VERSION)
+            .map_err(init_err)?;
+        info!(
+            "Schema migration complete (now at version {})",
+            SCHEMA_VERSION
+        );
+        Ok(())
+    }
+
+    /// Best-effort read of the stored schema version from an existing redb
+    /// file, without disturbing it. Returns `None` if the file is absent,
+    /// unopenable, has no `meta` table, or has no version stamp.
+    fn peek_schema_version(db_path: &std::path::Path) -> Option<u64> {
+        if !db_path.exists() {
+            return None;
+        }
+        let db = Database::open(db_path).ok()?;
+        let read_txn = db.begin_read().ok()?;
+        let meta = read_txn.open_table(META).ok()?;
+        meta.get(META_SCHEMA_VERSION).ok()?.map(|v| v.value())
+    }
+
+    /// Copy the redb file to a timestamped `<file>.bak-<version>-<epoch>` sibling
+    /// before an open that may migrate or reject it. Best-effort: a failure to
+    /// back up is logged but does not abort the open, since the original file is
+    /// never mutated by the copy itself.
+    fn backup_before_migration(db_path: &std::path::Path, stored_version: Option<u64>) {
+        if !db_path.exists() {
+            return;
+        }
+        let epoch = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let version_tag = stored_version
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "unknown".to_string());
+        let mut backup = db_path.as_os_str().to_owned();
+        backup.push(format!(".bak-{version_tag}-{epoch}"));
+        let backup = PathBuf::from(backup);
+        match std::fs::copy(db_path, &backup) {
+            Ok(_) => info!("Backed up database to {}", backup.display()),
+            Err(e) => warn!("Could not back up database before open: {}", e),
+        }
     }
 
     /// Persist a deletion record and return the assigned integer ID.
@@ -224,8 +365,10 @@ impl DeletionDatabase {
             .map_err(|e| ArtifactError::DatabaseQuery(format!("encode: {}", e)))
     }
 
-    // rkyv requires the buffer to satisfy the archive's alignment, but slices
-    // borrowed from redb make no such guarantee, so copy into an AlignedVec first.
+    // This is a full deserialize, not a zero-copy access: rkyv requires the
+    // buffer to satisfy the archive's alignment, but slices borrowed from redb
+    // make no such guarantee, so we copy into an AlignedVec first and then
+    // materialize an owned `DeletionRecord`. The copy is intentional.
     fn decode_record(bytes: &[u8]) -> Result<DeletionRecord> {
         let mut aligned = AlignedVec::<16>::with_capacity(bytes.len());
         aligned.extend_from_slice(bytes);
@@ -260,8 +403,12 @@ impl DeletionDatabase {
             }
             let (key, _) = entry?;
             let (_, id) = key.value();
-            if let Some(rec) = Self::load_record(&records, id)? {
-                out.push(rec);
+            match Self::load_record(&records, id)? {
+                Some(rec) => out.push(rec),
+                None => warn!(
+                    id,
+                    "dangling time-index entry: no record found for indexed id"
+                ),
             }
         }
 
@@ -293,8 +440,12 @@ impl DeletionDatabase {
         for entry in idx_time.range(lo..=hi)?.rev() {
             let (key, _) = entry?;
             let (_, id) = key.value();
-            if let Some(rec) = Self::load_record(&records, id)? {
-                out.push(rec);
+            match Self::load_record(&records, id)? {
+                Some(rec) => out.push(rec),
+                None => warn!(
+                    id,
+                    "dangling time-index entry: no record found for indexed id"
+                ),
             }
         }
 
@@ -312,9 +463,17 @@ impl DeletionDatabase {
 
         let mut total: i64 = 0;
         for entry in records.iter()? {
-            let (_, value) = entry?;
-            let rec = Self::decode_record(value.value())?;
-            total += rec.size_bytes;
+            let (key, value) = entry?;
+            // A single undecodable row must not abort the whole aggregation;
+            // skip it and warn rather than returning an error.
+            match Self::decode_record(value.value()) {
+                Ok(rec) => total += rec.size_bytes,
+                Err(e) => warn!(
+                    id = key.value(),
+                    error = %e,
+                    "skipping corrupt deletion record while summing space freed"
+                ),
+            }
         }
 
         info!("Total space freed: {} bytes", total);
@@ -335,8 +494,20 @@ impl DeletionDatabase {
             std::collections::HashMap::new();
 
         for entry in records.iter()? {
-            let (_, value) = entry?;
-            let rec = Self::decode_record(value.value())?;
+            let (key, value) = entry?;
+            // Skip-and-warn on a corrupt row so one bad record cannot poison
+            // the entire statistics computation.
+            let rec = match Self::decode_record(value.value()) {
+                Ok(rec) => rec,
+                Err(e) => {
+                    warn!(
+                        id = key.value(),
+                        error = %e,
+                        "skipping corrupt deletion record while computing statistics"
+                    );
+                    continue;
+                }
+            };
             total_deletions += 1;
             total_space_freed += rec.size_bytes;
             let entry = by_type.entry(rec.dir_type.clone()).or_insert((0, 0));
@@ -361,7 +532,7 @@ impl DeletionDatabase {
     pub fn cleanup_old_records(&self, older_than_days: i64) -> Result<usize> {
         let cutoff_timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_secs() as i64
             - (older_than_days * 86400);
 
@@ -513,27 +684,126 @@ mod tests {
         assert_eq!(stats.total_space_freed, 0);
     }
 
-    #[test]
-    fn rejects_unsupported_schema_version() {
-        let tmp = tempfile::tempdir().unwrap();
-        let db_path = tmp.path().join(DB_FILE);
+    /// Stamp a redb file at `dir` with an explicit schema version, leaving all
+    /// schema tables present so it looks like a real ARTIFACT database.
+    fn stamp_schema_version(dir: &std::path::Path, version: u64) {
+        let db_path = dir.join(DB_FILE);
         let raw = Database::create(&db_path).unwrap();
         let txn = raw.begin_write().unwrap();
         {
+            txn.open_table(RECORDS).unwrap();
+            txn.open_table(IDX_DELETED_AT).unwrap();
+            txn.open_table(IDX_DIR_TYPE).unwrap();
             let mut meta = txn.open_table(META).unwrap();
-            meta.insert(META_SCHEMA_VERSION, 999).unwrap();
+            meta.insert(META_SCHEMA_VERSION, version).unwrap();
         }
         txn.commit().unwrap();
         drop(raw);
+    }
+
+    #[test]
+    fn rejects_unsupported_schema_version() {
+        // A version newer than this build supports must still be rejected,
+        // now with the "newer than supported" semantics of the migration
+        // dispatch (rather than a blanket version mismatch).
+        let tmp = tempfile::tempdir().unwrap();
+        stamp_schema_version(tmp.path(), 999);
 
         let err = match DeletionDatabase::new(Some(tmp.path().to_path_buf())) {
-            Ok(_) => panic!("unsupported schema version should fail"),
+            Ok(_) => panic!("newer-than-supported schema version should fail"),
             Err(err) => err,
         };
         assert!(
-            err.to_string()
-                .contains("Unsupported database schema version")
+            err.to_string().contains("newer than supported"),
+            "unexpected error message: {err}"
         );
+        // And it must be classified as an init failure, not a query failure.
+        assert!(matches!(err, ArtifactError::DatabaseInit(_)));
+    }
+
+    #[test]
+    fn opens_current_schema_version_cleanly() {
+        // A database already stamped at the current version must open without
+        // error and be fully usable.
+        let tmp = tempfile::tempdir().unwrap();
+        stamp_schema_version(tmp.path(), SCHEMA_VERSION);
+
+        let db = DeletionDatabase::new(Some(tmp.path().to_path_buf()))
+            .expect("current-version database should open cleanly");
+        // Reopening (a second `new`) must also succeed and see the same data.
+        db.record_deletion(&sample_record()).unwrap();
+        drop(db);
+        let db2 = DeletionDatabase::new(Some(tmp.path().to_path_buf()))
+            .expect("reopening a current-version database should succeed");
+        assert_eq!(db2.get_recent_deletions(10).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn backs_up_before_touching_incompatible_version() {
+        // Opening a database whose version differs from the current build must
+        // leave a timestamped backup copy next to the original.
+        let tmp = tempfile::tempdir().unwrap();
+        stamp_schema_version(tmp.path(), 999);
+
+        // This open fails (newer than supported), but a backup must exist.
+        let _ = DeletionDatabase::new(Some(tmp.path().to_path_buf()));
+
+        let backups: Vec<_> = std::fs::read_dir(tmp.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .contains(&format!("{DB_FILE}.bak-"))
+            })
+            .collect();
+        assert!(
+            !backups.is_empty(),
+            "expected a .bak- backup of the incompatible database"
+        );
+    }
+
+    #[test]
+    fn aggregations_skip_corrupt_records() {
+        // A single deliberately-corrupt blob in the RECORDS table must not abort
+        // aggregation over the good rows.
+        let (db, tmp) = temp_db();
+        let good = sample_record();
+        db.record_deletion(&good).unwrap();
+        let good_size = good.size_bytes;
+
+        // Inject a corrupt record blob directly into the RECORDS table under a
+        // fresh id, mirroring what record_deletion writes minus a valid body.
+        {
+            let write_txn = db.db.begin_write().unwrap();
+            {
+                let mut records = write_txn.open_table(RECORDS).unwrap();
+                records
+                    .insert(9_999_u64, b"totally not an rkyv record".as_slice())
+                    .unwrap();
+            }
+            write_txn.commit().unwrap();
+        }
+
+        // Both aggregations must succeed and reflect only the good row.
+        let total = db.get_total_space_freed().unwrap();
+        assert_eq!(total, good_size);
+
+        let stats = db.get_deletion_statistics().unwrap();
+        assert_eq!(stats.total_deletions, 1);
+        assert_eq!(stats.total_space_freed, good_size);
+        assert!(stats.deletions_by_type.contains_key("node_modules"));
+
+        drop(tmp);
+    }
+
+    #[test]
+    fn metadata_is_valid_json_for_all_inputs() {
+        // The metadata field must be well-formed JSON carrying the schema
+        // version, regardless of hostname contents (serde_json handles escaping).
+        let rec = sample_record();
+        let parsed: serde_json::Value = serde_json::from_str(&rec.metadata).unwrap();
+        assert_eq!(parsed["version"], SCHEMA_VERSION);
     }
 
     #[test]

@@ -165,29 +165,91 @@ impl AppConfig {
     /// Returns `Ok(AppConfig::default())` if no config file exists yet.
     /// Constraint-clamping ([`AppConfig::apply_constraints`]) is applied after
     /// a successful parse.
+    ///
+    /// A malformed config file is **non-fatal**: it is backed up alongside the
+    /// original (with a `.corrupt` suffix) and defaults are returned, so a
+    /// hand-edited or partially-written config can never prevent startup.
     pub fn load() -> crate::error::Result<Self> {
-        let config_path = Self::config_path();
+        Self::load_from(&Self::config_path())
+    }
 
-        if config_path.exists() {
-            let content = std::fs::read_to_string(&config_path)?;
-            let mut config: AppConfig = toml::from_str(&content)
-                .map_err(|e| crate::error::ArtifactError::Configuration(e.to_string()))?;
-            config.apply_constraints();
-            Ok(config)
-        } else {
-            Ok(AppConfig::default())
+    /// Load configuration from an explicit path. See [`AppConfig::load`].
+    ///
+    /// Split out from [`AppConfig::load`] so the load logic can be exercised in
+    /// tests against a temporary directory without touching the real platform
+    /// config location.
+    fn load_from(config_path: &std::path::Path) -> crate::error::Result<Self> {
+        if !config_path.exists() {
+            return Ok(AppConfig::default());
         }
+
+        let content = std::fs::read_to_string(config_path)?;
+        match toml::from_str::<AppConfig>(&content) {
+            Ok(mut config) => {
+                config.apply_constraints();
+                Ok(config)
+            }
+            Err(e) => {
+                // Non-fatal: preserve the malformed file for the user to inspect
+                // and fall back to defaults so startup can proceed. We use a
+                // fixed `.corrupt` suffix (no clock/random access in the lib).
+                let backup_path = Self::corrupt_backup_path(config_path);
+                if let Err(rename_err) = std::fs::rename(config_path, &backup_path) {
+                    tracing::warn!(
+                        error = %rename_err,
+                        original = %config_path.display(),
+                        "failed to back up malformed config file"
+                    );
+                } else {
+                    tracing::warn!(
+                        parse_error = %e,
+                        backup = %backup_path.display(),
+                        "config file was malformed; backed it up and loaded defaults"
+                    );
+                }
+                Ok(AppConfig::default())
+            }
+        }
+    }
+
+    /// Path used to preserve a malformed config file (`<name>.corrupt`).
+    fn corrupt_backup_path(config_path: &std::path::Path) -> PathBuf {
+        let mut file_name = config_path
+            .file_name()
+            .map(|n| n.to_os_string())
+            .unwrap_or_else(|| std::ffi::OsString::from("config.toml"));
+        file_name.push(".corrupt");
+        config_path.with_file_name(file_name)
     }
 
     /// Serialize this configuration to TOML and write it to disk.
     ///
     /// Creates the config directory if it does not already exist.
+    ///
+    /// The write is **atomic**: the serialized content is first written to a
+    /// temporary file in the same directory and then `rename`d into place, so a
+    /// crash or full disk mid-write can never leave a truncated `config.toml`.
     pub fn save(&self) -> crate::error::Result<()> {
-        let config_dir = Self::config_dir();
-        std::fs::create_dir_all(&config_dir)?;
+        self.save_to(&Self::config_dir())
+    }
+
+    /// Serialize this configuration into `config.toml` inside `config_dir`.
+    ///
+    /// Split out from [`AppConfig::save`] so the atomic-write logic can be
+    /// tested against a temporary directory. Writes to a temp file in the same
+    /// directory then atomically renames it over the destination.
+    fn save_to(&self, config_dir: &std::path::Path) -> crate::error::Result<()> {
+        std::fs::create_dir_all(config_dir)?;
         let content = toml::to_string_pretty(self)
             .map_err(|e| crate::error::ArtifactError::Configuration(e.to_string()))?;
-        std::fs::write(Self::config_path(), content)?;
+
+        let dest = config_dir.join("config.toml");
+        let tmp = config_dir.join("config.toml.tmp");
+
+        // Write to a temp file in the SAME directory (so the rename is atomic
+        // on the same filesystem), then rename over the destination.
+        std::fs::write(&tmp, content)?;
+        std::fs::rename(&tmp, &dest)?;
         Ok(())
     }
 
@@ -274,6 +336,88 @@ mod tests {
             config.apply_constraints();
             assert_eq!(&config.logging.log_level, level);
         }
+    }
+
+    /// Create a unique temp directory for a test, returning its path.
+    /// Uses only stdlib + a thread-local counter (no external test-only crates).
+    fn unique_temp_dir(tag: &str) -> PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "artifact-config-test-{}-{}-{}",
+            tag,
+            std::process::id(),
+            n
+        ));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        dir
+    }
+
+    #[test]
+    fn save_then_load_round_trips() {
+        let dir = unique_temp_dir("roundtrip");
+
+        let mut config = AppConfig::default();
+        config.ui.window_width = 1500.0;
+        config.scan.delete_mode = DeleteMode::Permanent;
+        config.scan.max_results = 42;
+        config.logging.json_format = true;
+
+        config.save_to(&dir).expect("save_to failed");
+
+        let loaded = AppConfig::load_from(&dir.join("config.toml")).expect("load_from failed");
+        assert_eq!(loaded.ui.window_width, 1500.0);
+        assert_eq!(loaded.scan.delete_mode, DeleteMode::Permanent);
+        assert_eq!(loaded.scan.max_results, 42);
+        assert!(loaded.logging.json_format);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn save_to_is_atomic_and_leaves_no_temp_file() {
+        let dir = unique_temp_dir("atomic");
+        AppConfig::default().save_to(&dir).expect("save_to failed");
+
+        assert!(dir.join("config.toml").exists(), "config.toml should exist");
+        assert!(
+            !dir.join("config.toml.tmp").exists(),
+            "temp file should be renamed away after save"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn load_missing_file_returns_default() {
+        let dir = unique_temp_dir("missing");
+        let loaded = AppConfig::load_from(&dir.join("config.toml")).expect("load_from failed");
+        assert_eq!(loaded.ui.window_width, AppConfig::default().ui.window_width);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn malformed_config_loads_default_and_is_backed_up() {
+        let dir = unique_temp_dir("corrupt");
+        let config_path = dir.join("config.toml");
+        std::fs::write(&config_path, "this is not = valid toml [[[").expect("write bad config");
+
+        let loaded = AppConfig::load_from(&config_path).expect("load should not error");
+
+        // Fell back to defaults.
+        assert_eq!(loaded.ui.window_width, AppConfig::default().ui.window_width);
+        // Malformed file preserved as backup, original removed.
+        assert!(
+            !config_path.exists(),
+            "malformed original should have been renamed away"
+        );
+        assert!(
+            dir.join("config.toml.corrupt").exists(),
+            "backup of malformed config should exist"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

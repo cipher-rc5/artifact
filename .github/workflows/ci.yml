@@ -21,6 +21,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # gpui links against X11/xkbcommon/Wayland on Linux; without these dev
+      # packages any executable target (bin, tests, benches) fails at link time
+      # with `unable to find library -lxcb / -lxkbcommon / -lxkbcommon-x11`.
+      - name: Install Linux GUI dependencies (gpui)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev \
+            libwayland-dev libssl-dev
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -38,10 +50,10 @@ jobs:
             ${{ runner.os }}-cargo-
 
       - name: cargo check
-        run: cargo check --all-targets
+        run: cargo check --all-targets --locked
 
       - name: cargo test
-        run: cargo test
+        run: cargo test --all-targets --locked
 
       - name: cargo clippy
         run: cargo clippy --all-targets -- -D warnings
@@ -49,11 +61,24 @@ jobs:
       - name: cargo fmt
         run: cargo fmt --all -- --check
 
+      - name: dprint check
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          curl -fsSL https://dprint.dev/install.sh | sh
+          "$HOME/.dprint/bin/dprint" check
+
+      - name: Enforce advisory review policy
+        if: matrix.os == 'ubuntu-latest'
+        run: python3 scripts/check-advisories.py
+
       - name: cargo audit
         if: matrix.os == 'ubuntu-latest'
         run: |
           cargo install cargo-audit --locked --quiet
-          cargo audit --ignore RUSTSEC-2025-0134 --ignore RUSTSEC-2025-0052 --ignore RUSTSEC-2024-0384 --ignore RUSTSEC-2024-0436
+          # Accepted advisories are single-sourced in scripts/advisories.json;
+          # cargo-audit has no --config flag, so build --ignore args from it.
+          IGNORES=$(python3 -c "import json; print(' '.join('--ignore ' + a['id'] for a in json.load(open('scripts/advisories.json'))['advisories']))")
+          cargo audit $IGNORES
 
       - name: cargo deny
         if: matrix.os == 'ubuntu-latest'

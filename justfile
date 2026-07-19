@@ -36,13 +36,16 @@ fmt:
 clippy:
     cargo clippy --all-targets -- -D warnings
 
-# Audit dependencies for vulnerabilities.
-# RUSTSEC-2025-0134 (rustls-pemfile unmaintained) is ignored — see audit.toml for rationale.
+# Audit deps; accepted advisories are single-sourced in audit.toml (see scripts/advisories.json).
 audit:
-    cargo audit --ignore RUSTSEC-2025-0134 --ignore RUSTSEC-2025-0052 --ignore RUSTSEC-2024-0384 --ignore RUSTSEC-2024-0436
+    cargo audit $(python3 -c "import json; print(' '.join('--ignore ' + a['id'] for a in json.load(open('scripts/advisories.json'))['advisories']))")
 
 deny:
     cargo deny check
+
+# Fail if any advisory "Review by" date has lapsed or audit.toml/deny.toml drift from advisories.json.
+check-advisories:
+    python3 scripts/check-advisories.py
 
 # --- Distribution builds (cargo-zigbuild) --------------------------------
 

@@ -5,11 +5,11 @@
 //! consumer; this lib target enables integration testing against real
 //! filesystem and database operations.
 
-pub mod components;
 pub mod config;
 pub mod database;
 pub mod directory_item;
 pub mod error;
+pub mod history;
 pub mod logging;
 pub mod rules;
 pub mod scanner;
