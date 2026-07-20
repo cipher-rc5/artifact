@@ -134,13 +134,21 @@ pub static RULES: &[ArtifactRule] = &[
         confidence: RuleConfidence::High,
         allow_orphan_without_marker: false,
     },
+    // `bin` and `obj` are extremely common directory names. These rules only
+    // fire when a real .NET project file (`.csproj`/`.sln`/`.fsproj`) sits
+    // beside the directory, and `allow_orphan_without_marker` is `false` so a
+    // bare `bin`/`obj` with no project file is *never* matched — the marker is
+    // mandatory. Confidence is deliberately `Low` (not `Medium`): a project
+    // file next to `bin`/`obj` is strong evidence, but the generic name means a
+    // wrong deletion here is costlier than for uniquely-named artifacts, so we
+    // surface it more cautiously. (M2)
     ArtifactRule {
         name: "dotnet_bin",
         language: ".NET",
         dir_name: "bin",
         markers: &[".csproj", ".sln", ".fsproj"],
         color_hint: ColorHint::Purple,
-        confidence: RuleConfidence::Medium,
+        confidence: RuleConfidence::Low,
         allow_orphan_without_marker: false,
     },
     ArtifactRule {
@@ -149,7 +157,7 @@ pub static RULES: &[ArtifactRule] = &[
         dir_name: "obj",
         markers: &[".csproj", ".sln", ".fsproj"],
         color_hint: ColorHint::Purple,
-        confidence: RuleConfidence::Medium,
+        confidence: RuleConfidence::Low,
         allow_orphan_without_marker: false,
     },
     ArtifactRule {
@@ -179,11 +187,20 @@ pub static RULES: &[ArtifactRule] = &[
         confidence: RuleConfidence::High,
         allow_orphan_without_marker: false,
     },
+    // Xcode's `DerivedData` was previously matched with *empty* markers, which
+    // means `match_rule` returns a hit for ANY directory named `DerivedData`
+    // anywhere on disk, unconditionally — a real false-positive deletion risk.
+    // We now require Xcode's own `Build`/`Index.noindex` subdirectories, which
+    // Xcode always creates inside a genuine DerivedData folder, so an unrelated
+    // directory that merely shares the name is no longer matched. Markers are
+    // resolved against the parent, so `DerivedData/Build` checks for the `Build`
+    // subdirectory *inside* the matched folder. Confidence stays `Low` and
+    // `allow_orphan_without_marker` stays `false`. (M2)
     ArtifactRule {
         name: "xcode_derived",
         language: "Xcode",
         dir_name: "DerivedData",
-        markers: &[],
+        markers: &["DerivedData/Build", "DerivedData/Index.noindex"],
         color_hint: ColorHint::Red,
         confidence: RuleConfidence::Low,
         allow_orphan_without_marker: false,
@@ -271,6 +288,31 @@ mod tests {
             let rule = find(name).unwrap();
             assert!(!rule.allow_orphan_without_marker, "{name} is too generic");
         }
+    }
+
+    #[test]
+    fn dotnet_and_xcode_rules_require_markers() {
+        // Generic `bin`/`obj` must never match without a project-file marker.
+        for name in ["dotnet_bin", "dotnet_obj"] {
+            let rule = find(name).unwrap();
+            assert!(
+                !rule.markers.is_empty(),
+                "{name} must require a marker to avoid false positives"
+            );
+            assert!(!rule.allow_orphan_without_marker);
+            assert_eq!(
+                rule.confidence,
+                RuleConfidence::Low,
+                "{name} confidence should be Low given the generic name"
+            );
+        }
+        // DerivedData must no longer match unconditionally (empty markers).
+        let xcode = find("xcode_derived").unwrap();
+        assert!(
+            !xcode.markers.is_empty(),
+            "xcode_derived must require a marker so an unrelated DerivedData dir isn't matched"
+        );
+        assert!(!xcode.allow_orphan_without_marker);
     }
 
     #[test]

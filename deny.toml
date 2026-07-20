@@ -1,14 +1,22 @@
 [graph]
 all-features = true
 
+# cargo-deny needs its own advisory list, but the review dates and the set of
+# accepted IDs are single-sourced in scripts/advisories.json (enforced by
+# scripts/check-advisories.py). Keep these IDs in sync with audit.toml.
 [advisories]
 version = 2
 yanked = "warn"
 ignore = [
-  { id = "RUSTSEC-2025-0134", reason = "Transitive via gpui; review by 2026-08-01" },
-  { id = "RUSTSEC-2025-0052", reason = "Transitive via gpui; review by 2026-08-01" },
-  { id = "RUSTSEC-2024-0384", reason = "Transitive via gpui; review by 2026-08-01" },
-  { id = "RUSTSEC-2024-0436", reason = "Transitive via gpui; review by 2026-08-01" },
+  { id = "RUSTSEC-2025-0134", reason = "Transitive via gpui; review dates in scripts/advisories.json" },
+  { id = "RUSTSEC-2025-0052", reason = "Transitive via gpui; review dates in scripts/advisories.json" },
+  { id = "RUSTSEC-2024-0384", reason = "Transitive via gpui; review dates in scripts/advisories.json" },
+  { id = "RUSTSEC-2024-0436", reason = "Transitive via gpui; review dates in scripts/advisories.json" },
+  { id = "RUSTSEC-2026-0194", reason = "quick-xml DoS; transitive via gpui, semver-locked, unreachable from artifact input; review dates in scripts/advisories.json" },
+  { id = "RUSTSEC-2026-0195", reason = "quick-xml DoS; transitive via gpui, semver-locked, unreachable from artifact input; review dates in scripts/advisories.json" },
+  { id = "RUSTSEC-2026-0173", reason = "proc-macro-error2 unmaintained; build-time-only transitive via gpui; review dates in scripts/advisories.json" },
+  { id = "RUSTSEC-2026-0206", reason = "rustybuzz unmaintained; transitive via gpui; review dates in scripts/advisories.json" },
+  { id = "RUSTSEC-2026-0192", reason = "ttf-parser unmaintained; transitive via gpui; review dates in scripts/advisories.json" },
 ]
 
 [licenses]
