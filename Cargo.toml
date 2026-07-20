@@ -10,7 +10,7 @@ description = "GPUI-based desktop app for finding and reclaiming disk space."
 
 [dependencies]
 # Error handling
-anyhow = "1.0.102" # Ergonomic error type for application code (`anyhow::Result`).
+anyhow = "1.0.103" # Ergonomic error type for application code (`anyhow::Result`).
 thiserror = "2.0.18" # Derive macro for typed error enums in library modules.
 
 # Concurrency primitives
