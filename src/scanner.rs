@@ -298,7 +298,7 @@ impl Scanner {
                         // Matched artifacts are not descended into by the real
                         // scan, so we must prune here too or the count would
                         // include their (never-visited) interiors.
-                        entry.read_children_path = None;
+                        entry.read_children = None;
                     }
                 }
             });
@@ -349,7 +349,7 @@ impl Scanner {
                         }
                         // Don't walk into matched artifacts during the outer
                         // traversal — sizing handles their interior.
-                        entry.read_children_path = None;
+                        entry.read_children = None;
                     }
                 }
             })
